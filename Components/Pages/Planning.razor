@@ -2,10 +2,13 @@
 @using System.Data
 @using System.Data.Common
 @using System.Globalization
+@using System.IO
 @using System.Text
 @using System.Text.RegularExpressions
 @inject IDbContextFactory<ApplicationDbContext> DbFactory
 @inject IPlanningPortalScraper Scraper
+@inject IPlanningApplicationExcelExportService ExcelExportService
+@inject IJSRuntime JS
 
 <PageTitle>Planning Portal Scraper</PageTitle>
 
@@ -14,9 +17,14 @@
         <p class="eyebrow">Idox Public Access</p>
         <h1>Planning portal scraper</h1>
     </div>
-    <button class="primary-button" type="button" @onclick="ScrapeWeeklyAsync" disabled="@_isScraping">
-        @_scrapeButtonLabel
-    </button>
+    <div class="page-header-actions">
+        <button class="secondary-button" type="button" @onclick="OpenExportColumnsModal" disabled="@(!CanExportSearchResults)">
+            Export Results to Excel
+        </button>
+        <button class="primary-button" type="button" @onclick="ScrapeWeeklyAsync" disabled="@_isScraping">
+            @_scrapeButtonLabel
+        </button>
+    </div>
 </section>
 
 <section class="planning-summary">
@@ -49,17 +57,14 @@
                                aria-label="@GetSearchCriterionLabel(index)"
                                @bind="criterion.Text"
                                @bind:event="oninput" />
-                        @if (index == 0)
-                        {
-                            <button class="icon-button search-settings-button"
-                                    type="button"
-                                    title="Search settings"
-                                    aria-label="Open criteria search settings"
-                                    aria-haspopup="dialog"
-                                    @onclick="OpenSearchSettingsModal">
-                                <span aria-hidden="true">&#9881;</span>
-                            </button>
-                        }
+                        <button class="icon-button search-settings-button"
+                                type="button"
+                                title="Search settings"
+                                aria-label="@GetSearchCriterionSettingsLabel(index)"
+                                aria-haspopup="dialog"
+                                @onclick="() => OpenSearchSettingsModal(criterion)">
+                            <span aria-hidden="true">&#9881;</span>
+                        </button>
                     </div>
                     @if (_searchCriteria.Count > 1)
                     {
@@ -94,13 +99,15 @@
     }
 </section>
 
-@if (_isSearchSettingsModalOpen)
+@if (_isSearchSettingsModalOpen && _selectedSearchCriterion is not null)
 {
+    var selectedSearchCriterion = _selectedSearchCriterion;
+
     <div class="modal-backdrop" @onclick="CloseSearchSettingsModal">
         <section class="modal-panel search-settings-modal" role="dialog" aria-modal="true" aria-labelledby="search-settings-modal-title" @onclick:stopPropagation="true">
             <header class="modal-header">
                 <div>
-                    <p class="planning-authority">Keyword search</p>
+                    <p class="planning-authority">@GetSearchCriterionSettingsContext(selectedSearchCriterion)</p>
                     <h2 id="search-settings-modal-title">Criteria settings</h2>
                 </div>
                 <button class="secondary-button" type="button" @onclick="CloseSearchSettingsModal">Close</button>
@@ -108,7 +115,7 @@
 
             <div class="search-settings-options">
                 <label class="setting-checkbox">
-                    <input type="checkbox" @bind="_searchWordsMustBeAdjacent" />
+                    <input type="checkbox" @bind="selectedSearchCriterion.RequireAdjacentWords" />
                     <span>Words must be next to each other in the document</span>
                 </label>
             </div>
@@ -118,6 +125,14 @@
             </footer>
         </section>
     </div>
+}
+
+@if (_isExportColumnsModalOpen)
+{
+    <PlanningExportColumnsModal AvailableColumns="@ExportColumns"
+                                ResultCount="@_searchTotalCount"
+                                OnDone="ExportSearchResultsAsync"
+                                OnCancel="CloseExportColumnsModal" />
 }
 
 @if (!string.IsNullOrWhiteSpace(_errorMessage))
@@ -550,8 +565,10 @@ SELECT CAST(
     private bool _isDocumentsModalOpen;
     private bool _isRelevantDocumentsModalOpen;
     private bool _isSearchSettingsModalOpen;
-    private bool _searchWordsMustBeAdjacent;
+    private bool _isExportColumnsModalOpen;
+    private bool _isExporting;
     private PlanningApplication? _selectedApplication;
+    private SearchCriterionInput? _selectedSearchCriterion;
     private Guid? _expandedDocumentId;
     private string? _errorMessage;
     private string? _lastSearchText;
@@ -563,6 +580,12 @@ SELECT CAST(
     private int SearchTotalPages => GetTotalPages(_searchTotalCount, SearchPageSize);
     private string ApplicationPaginationSummary => GetPaginationSummary(_applicationTotalCount, _applicationPage, ApplicationPageSize, "application");
     private string SearchPaginationSummary => GetPaginationSummary(_searchTotalCount, _searchPage, SearchPageSize, "planning application");
+    private IReadOnlyList<PlanningApplicationExportColumn> ExportColumns => ExcelExportService.GetAvailableColumns();
+    private bool CanExportSearchResults => _searchHasRun
+        && !_isSearching
+        && !_isExporting
+        && _searchTotalCount > 0
+        && _lastSearchConditions.Count > 0;
     private bool CanShowRelevantDocuments => _selectedApplication?.PlanningDocuments.Count > 0 && GetRelevantDocumentCriteria().Count > 0;
     private string RelevantDocumentsEmptyMessage => _relevantDocumentCriteriaFilters.Any(filter => filter.IsSelected)
         ? "No stored document text matched the selected criteria."
@@ -635,7 +658,7 @@ SELECT CAST(
 
     private async Task SearchAsync()
     {
-        var searchCriteria = BuildFullTextSearchCriteria(_searchCriteria, _searchWordsMustBeAdjacent);
+        var searchCriteria = BuildFullTextSearchCriteria(_searchCriteria);
         if (searchCriteria.Count == 0)
         {
             ClearSearch();
@@ -724,6 +747,10 @@ SELECT CAST(
         }
 
         _searchCriteria.Remove(criterion);
+        if (ReferenceEquals(_selectedSearchCriterion, criterion))
+        {
+            CloseSearchSettingsModal();
+        }
 
         if (_searchCriteria.Count == 0)
         {
@@ -731,14 +758,65 @@ SELECT CAST(
         }
     }
 
-    private void OpenSearchSettingsModal()
+    private void OpenSearchSettingsModal(SearchCriterionInput criterion)
     {
+        _selectedSearchCriterion = criterion;
         _isSearchSettingsModalOpen = true;
     }
 
     private void CloseSearchSettingsModal()
     {
         _isSearchSettingsModalOpen = false;
+        _selectedSearchCriterion = null;
+    }
+
+    private void OpenExportColumnsModal()
+    {
+        if (!CanExportSearchResults)
+        {
+            return;
+        }
+
+        _errorMessage = null;
+        _isExportColumnsModalOpen = true;
+    }
+
+    private void CloseExportColumnsModal()
+    {
+        _isExportColumnsModalOpen = false;
+    }
+
+    private async Task ExportSearchResultsAsync(PlanningApplicationExportSelection selection)
+    {
+        if (_lastSearchConditions.Count == 0)
+        {
+            _isExportColumnsModalOpen = false;
+            return;
+        }
+
+        _isExporting = true;
+        _isExportColumnsModalOpen = false;
+        _errorMessage = null;
+
+        try
+        {
+            var result = await ExcelExportService.ExportSearchResultsAsync(new PlanningApplicationExcelExportRequest(
+                _lastSearchConditions.ToList(),
+                selection.ColumnKeys,
+                selection.CustomColumns));
+
+            using var stream = new MemoryStream(result.Content);
+            using var streamReference = new DotNetStreamReference(stream);
+            await JS.InvokeVoidAsync("portalScraper.downloadFileFromStream", result.FileName, result.ContentType, streamReference);
+        }
+        catch (Exception ex)
+        {
+            _errorMessage = $"Unable to export planning results: {ex.Message}";
+        }
+        finally
+        {
+            _isExporting = false;
+        }
     }
 
     private async Task PreviousApplicationPageAsync()
@@ -1309,7 +1387,7 @@ FROM [RankedApplications]");
     {
         return _lastSearchCriteria.Count > 0
             ? _lastSearchCriteria
-            : BuildFullTextSearchCriteria(_searchCriteria, _searchWordsMustBeAdjacent);
+            : BuildFullTextSearchCriteria(_searchCriteria);
     }
 
     private static List<RelevantDocumentMatch> BuildRelevantDocumentMatches(
@@ -1331,18 +1409,18 @@ FROM [RankedApplications]");
                 continue;
             }
 
-            var matchingTerms = criteria
-                .Where(criterion => CriterionMatchesDocumentWords(criterion, documentWords))
-                .SelectMany(criterion => criterion.SearchTerms)
-                .Distinct(StringComparer.OrdinalIgnoreCase)
+            var matchingWordRanges = criteria
+                .SelectMany(criterion => GetCriterionWordMatchRanges(criterion, documentWords))
+                .GroupBy(range => new { range.StartWordIndex, range.EndWordIndex })
+                .Select(group => group.First())
                 .ToList();
 
-            if (matchingTerms.Count == 0)
+            if (matchingWordRanges.Count == 0)
             {
                 continue;
             }
 
-            var snippets = BuildRelevantDocumentSnippets(document.ContentText, documentWords, matchingTerms);
+            var snippets = BuildRelevantDocumentSnippets(document.ContentText, documentWords, matchingWordRanges);
             if (snippets.Count == 0)
             {
                 continue;
@@ -1362,34 +1440,25 @@ FROM [RankedApplications]");
     private static List<RelevantDocumentSnippet> BuildRelevantDocumentSnippets(
         string contentText,
         IReadOnlyList<TextWord> documentWords,
-        IReadOnlyList<string> searchTerms)
+        IReadOnlyList<WordRange> matchingWordRanges)
     {
-        var matchWordIndexes = documentWords
-            .Select((word, index) => new { Word = word, Index = index })
-            .Where(item => searchTerms.Any(term => WordMatchesSearchTerm(item.Word.Text, term)))
-            .Select(item => item.Index)
-            .ToList();
-
-        if (matchWordIndexes.Count == 0)
+        if (matchingWordRanges.Count == 0)
         {
             return [];
         }
 
-        var ranges = MergeWordRanges(matchWordIndexes
-            .Select(index => new WordRange
+        var ranges = MergeWordRanges(matchingWordRanges
+            .Select(range => new WordRange
             {
-                StartWordIndex = Math.Max(0, index - RelevantDocumentContextWordCount),
-                EndWordIndex = Math.Min(documentWords.Count - 1, index + RelevantDocumentContextWordCount)
+                StartWordIndex = Math.Max(0, range.StartWordIndex - RelevantDocumentContextWordCount),
+                EndWordIndex = Math.Min(documentWords.Count - 1, range.EndWordIndex + RelevantDocumentContextWordCount)
             })
             .ToList());
 
         return ranges
             .Select(range =>
             {
-                var firstWord = documentWords[range.StartWordIndex];
-                var lastWord = documentWords[range.EndWordIndex];
-                var snippetText = contentText[firstWord.Start..lastWord.End].Trim();
-                var highlightedHtml = HighlightSearchTerms(snippetText, searchTerms);
+                var highlightedHtml = HighlightMatchingWordRanges(contentText, documentWords, range, matchingWordRanges);
 
                 if (range.StartWordIndex > 0)
                 {
@@ -1404,7 +1473,7 @@ FROM [RankedApplications]");
                 return new RelevantDocumentSnippet
                 {
                     HighlightedHtml = highlightedHtml,
-                    MatchCount = CountMatchingWords(documentWords, range, searchTerms)
+                    MatchCount = CountMatchingWordRanges(range, matchingWordRanges)
                 };
             })
             .ToList();
@@ -1417,10 +1486,15 @@ FROM [RankedApplications]");
             return ranges.ToList();
         }
 
-        var mergedRanges = new List<WordRange>();
-        var currentRange = ranges[0];
+        var orderedRanges = ranges
+            .OrderBy(range => range.StartWordIndex)
+            .ThenBy(range => range.EndWordIndex)
+            .ToList();
 
-        foreach (var range in ranges.Skip(1))
+        var mergedRanges = new List<WordRange>();
+        var currentRange = orderedRanges[0];
+
+        foreach (var range in orderedRanges.Skip(1))
         {
             if (range.StartWordIndex <= currentRange.EndWordIndex + 1)
             {
@@ -1437,54 +1511,44 @@ FROM [RankedApplications]");
         return mergedRanges;
     }
 
-    private static int CountMatchingWords(IReadOnlyList<TextWord> documentWords, WordRange range, IReadOnlyList<string> searchTerms)
+    private static int CountMatchingWordRanges(WordRange snippetRange, IReadOnlyList<WordRange> matchingWordRanges)
     {
-        var matchCount = 0;
-
-        for (var index = range.StartWordIndex; index <= range.EndWordIndex; index++)
-        {
-            if (searchTerms.Any(term => WordMatchesSearchTerm(documentWords[index].Text, term)))
-            {
-                matchCount++;
-            }
-        }
-
-        return matchCount;
+        return matchingWordRanges.Count(match =>
+            match.StartWordIndex >= snippetRange.StartWordIndex &&
+            match.EndWordIndex <= snippetRange.EndWordIndex);
     }
 
-    private static List<TextWord> GetWordSpans(string text)
+    private static List<WordRange> GetCriterionWordMatchRanges(FullTextSearchCriterion criterion, IReadOnlyList<TextWord> documentWords)
     {
-        return KeywordRegex.Matches(text)
-            .Select(match => new TextWord
+        if (criterion.RequireAdjacentWords && criterion.SearchTerms.Count > 1)
+        {
+            return FindAdjacentSearchTermRanges(criterion.SearchTerms, documentWords);
+        }
+
+        if (!criterion.SearchTerms.All(term => documentWords.Any(word => WordMatchesSearchTerm(word.Text, term))))
+        {
+            return [];
+        }
+
+        return documentWords
+            .Select((word, index) => new { Word = word, Index = index })
+            .Where(item => criterion.SearchTerms.Any(term => WordMatchesSearchTerm(item.Word.Text, term)))
+            .Select(item => new WordRange
             {
-                Text = match.Value,
-                Start = match.Index,
-                End = match.Index + match.Length
+                StartWordIndex = item.Index,
+                EndWordIndex = item.Index
             })
             .ToList();
     }
 
-    private static bool CriterionMatchesDocumentWords(FullTextSearchCriterion criterion, IReadOnlyList<TextWord> documentWords)
+    private static List<WordRange> FindAdjacentSearchTermRanges(IReadOnlyList<string> searchTerms, IReadOnlyList<TextWord> documentWords)
     {
-        if (criterion.RequireAdjacentWords && criterion.SearchTerms.Count > 1)
+        if (searchTerms.Count == 0 || documentWords.Count < searchTerms.Count)
         {
-            return ContainsAdjacentSearchTerms(criterion.SearchTerms, documentWords);
+            return [];
         }
 
-        return criterion.SearchTerms.All(term => documentWords.Any(word => WordMatchesSearchTerm(word.Text, term)));
-    }
-
-    private static bool ContainsAdjacentSearchTerms(IReadOnlyList<string> searchTerms, IReadOnlyList<TextWord> documentWords)
-    {
-        if (searchTerms.Count == 0)
-        {
-            return false;
-        }
-
-        if (documentWords.Count < searchTerms.Count)
-        {
-            return false;
-        }
+        var ranges = new List<WordRange>();
 
         for (var startIndex = 0; startIndex <= documentWords.Count - searchTerms.Count; startIndex++)
         {
@@ -1503,11 +1567,27 @@ FROM [RankedApplications]");
 
             if (isMatch)
             {
-                return true;
+                ranges.Add(new WordRange
+                {
+                    StartWordIndex = startIndex,
+                    EndWordIndex = startIndex + searchTerms.Count - 1
+                });
             }
         }
 
-        return false;
+        return ranges;
+    }
+
+    private static List<TextWord> GetWordSpans(string text)
+    {
+        return KeywordRegex.Matches(text)
+            .Select(match => new TextWord
+            {
+                Text = match.Value,
+                Start = match.Index,
+                End = match.Index + match.Length
+            })
+            .ToList();
     }
 
     private static bool WordMatchesSearchTerm(string word, string searchTerm)
@@ -1515,36 +1595,89 @@ FROM [RankedApplications]");
         return word.StartsWith(searchTerm, StringComparison.OrdinalIgnoreCase);
     }
 
-    private static string HighlightSearchTerms(string text, IReadOnlyList<string> searchTerms)
+    private static string HighlightMatchingWordRanges(
+        string contentText,
+        IReadOnlyList<TextWord> documentWords,
+        WordRange snippetRange,
+        IReadOnlyList<WordRange> matchingWordRanges)
     {
-        var terms = searchTerms
-            .Where(term => !string.IsNullOrWhiteSpace(term))
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .OrderByDescending(term => term.Length)
-            .Select(Regex.Escape)
+        var snippetStart = documentWords[snippetRange.StartWordIndex].Start;
+        var snippetEnd = documentWords[snippetRange.EndWordIndex].End;
+        var highlightSpans = matchingWordRanges
+            .Where(range =>
+                range.StartWordIndex >= snippetRange.StartWordIndex &&
+                range.EndWordIndex <= snippetRange.EndWordIndex)
+            .Select(range => new TextSpan
+            {
+                Start = documentWords[range.StartWordIndex].Start,
+                End = documentWords[range.EndWordIndex].End
+            })
             .ToList();
 
-        if (terms.Count == 0)
+        return HighlightTextSpans(contentText, snippetStart, snippetEnd, highlightSpans);
+    }
+
+    private static string HighlightTextSpans(string text, int start, int end, IReadOnlyList<TextSpan> highlightSpans)
+    {
+        if (highlightSpans.Count == 0)
         {
-            return System.Net.WebUtility.HtmlEncode(text);
+            return System.Net.WebUtility.HtmlEncode(text[start..end]);
         }
 
-        var regex = new Regex($@"(?<![\p{{L}}\p{{Nd}}])(?:{string.Join("|", terms)})[\p{{L}}\p{{Nd}}]*", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
         var highlightedText = new StringBuilder();
-        var previousIndex = 0;
+        var previousIndex = start;
 
-        foreach (Match match in regex.Matches(text))
+        foreach (var span in MergeTextSpans(highlightSpans))
         {
-            highlightedText.Append(System.Net.WebUtility.HtmlEncode(text[previousIndex..match.Index]));
+            var spanStart = Math.Clamp(span.Start, start, end);
+            var spanEnd = Math.Clamp(span.End, start, end);
+
+            if (spanEnd <= previousIndex)
+            {
+                continue;
+            }
+
+            highlightedText.Append(System.Net.WebUtility.HtmlEncode(text[previousIndex..spanStart]));
             highlightedText.Append("<mark>");
-            highlightedText.Append(System.Net.WebUtility.HtmlEncode(match.Value));
+            highlightedText.Append(System.Net.WebUtility.HtmlEncode(text[spanStart..spanEnd]));
             highlightedText.Append("</mark>");
-            previousIndex = match.Index + match.Length;
+            previousIndex = spanEnd;
         }
 
-        highlightedText.Append(System.Net.WebUtility.HtmlEncode(text[previousIndex..]));
+        highlightedText.Append(System.Net.WebUtility.HtmlEncode(text[previousIndex..end]));
 
         return highlightedText.ToString();
+    }
+
+    private static List<TextSpan> MergeTextSpans(IReadOnlyList<TextSpan> spans)
+    {
+        if (spans.Count <= 1)
+        {
+            return spans.ToList();
+        }
+
+        var orderedSpans = spans
+            .OrderBy(span => span.Start)
+            .ThenBy(span => span.End)
+            .ToList();
+        var mergedSpans = new List<TextSpan>();
+        var currentSpan = orderedSpans[0];
+
+        foreach (var span in orderedSpans.Skip(1))
+        {
+            if (span.Start <= currentSpan.End)
+            {
+                currentSpan.End = Math.Max(currentSpan.End, span.End);
+                continue;
+            }
+
+            mergedSpans.Add(currentSpan);
+            currentSpan = span;
+        }
+
+        mergedSpans.Add(currentSpan);
+
+        return mergedSpans;
     }
 
     private static string FormatMatchCount(int matchCount)
@@ -1562,6 +1695,20 @@ FROM [RankedApplications]");
         return $"Keyword search criterion {index + 1}";
     }
 
+    private static string GetSearchCriterionSettingsLabel(int index)
+    {
+        return $"Open settings for keyword search criterion {index + 1}";
+    }
+
+    private string GetSearchCriterionSettingsContext(SearchCriterionInput criterion)
+    {
+        var index = _searchCriteria.IndexOf(criterion);
+
+        return index >= 0
+            ? $"Keyword search criterion {index + 1}"
+            : "Keyword search";
+    }
+
     private static string GetSearchCriterionPlaceholder(int index)
     {
         return index == 0
@@ -1569,7 +1716,7 @@ FROM [RankedApplications]");
             : "Additional keyword criteria";
     }
 
-    private static List<FullTextSearchCriterion> BuildFullTextSearchCriteria(IEnumerable<SearchCriterionInput> criteria, bool requireAdjacentWords)
+    private static List<FullTextSearchCriterion> BuildFullTextSearchCriteria(IEnumerable<SearchCriterionInput> criteria)
     {
         var searchCriteria = new List<FullTextSearchCriterion>();
 
@@ -1583,9 +1730,9 @@ FROM [RankedApplications]");
                 searchCriteria.Add(new FullTextSearchCriterion
                 {
                     DisplayText = displayText,
-                    SearchCondition = BuildFullTextSearchCondition(searchTerms, requireAdjacentWords),
+                    SearchCondition = BuildFullTextSearchCondition(searchTerms, criterion.RequireAdjacentWords),
                     SearchTerms = searchTerms,
-                    RequireAdjacentWords = requireAdjacentWords
+                    RequireAdjacentWords = criterion.RequireAdjacentWords
                 });
             }
         }
@@ -1636,6 +1783,8 @@ FROM [RankedApplications]");
     private sealed class SearchCriterionInput
     {
         public string Text { get; set; } = string.Empty;
+
+        public bool RequireAdjacentWords { get; set; }
     }
 
     private sealed class FullTextSearchCriterion
@@ -1678,6 +1827,13 @@ FROM [RankedApplications]");
     {
         public string Text { get; set; } = string.Empty;
 
+        public int Start { get; set; }
+
+        public int End { get; set; }
+    }
+
+    private sealed class TextSpan
+    {
         public int Start { get; set; }
 
         public int End { get; set; }

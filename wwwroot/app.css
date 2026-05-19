@@ -159,6 +159,14 @@ code {
     margin-bottom: 1rem;
 }
 
+.page-header-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 0.75rem;
+    align-items: center;
+    flex-wrap: wrap;
+}
+
 .todo-form {
     display: grid;
     gap: 0.75rem;
@@ -587,6 +595,10 @@ code {
     width: min(34rem, 100%);
 }
 
+.export-columns-modal {
+    width: min(58rem, 100%);
+}
+
 .modal-header {
     display: flex;
     justify-content: space-between;
@@ -678,6 +690,83 @@ code {
 
 .setting-checkbox span {
     overflow-wrap: anywhere;
+}
+
+.export-modal-content {
+    display: grid;
+    gap: 1rem;
+}
+
+.export-fieldset {
+    display: grid;
+    gap: 0.75rem;
+    min-width: 0;
+    margin: 0;
+    padding: 0.9rem;
+    border: 1px solid var(--border);
+    border-radius: 0.75rem;
+    background: rgba(248, 250, 252, 0.95);
+}
+
+.export-fieldset legend {
+    padding: 0 0.35rem;
+    color: var(--muted);
+    font-size: 0.82rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+.export-column-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
+    gap: 0.65rem;
+}
+
+.export-column-toggle {
+    display: flex;
+    min-width: 0;
+    align-items: flex-start;
+    gap: 0.55rem;
+    padding: 0.7rem;
+    border: 1px solid rgba(13, 148, 136, 0.18);
+    border-radius: 0.75rem;
+    background: #fff;
+    color: #24344d;
+    font-weight: 600;
+}
+
+.export-column-toggle input {
+    flex: 0 0 auto;
+    margin-top: 0.25rem;
+    accent-color: var(--accent);
+}
+
+.export-column-toggle span {
+    overflow-wrap: anywhere;
+}
+
+.custom-column-list {
+    display: grid;
+    gap: 0.75rem;
+}
+
+.custom-column-row {
+    display: grid;
+    grid-template-columns: minmax(10rem, 1fr) minmax(12rem, 1.4fr) auto;
+    gap: 0.65rem;
+    align-items: center;
+}
+
+.export-modal-actions {
+    justify-content: space-between;
+}
+
+.export-modal-actions div {
+    display: flex;
+    gap: 0.75rem;
+    align-items: center;
+    flex-wrap: wrap;
 }
 
 .relevant-criteria-filter {
@@ -813,8 +902,23 @@ code {
     .planning-search-row,
     .planning-search-actions,
     .pagination-controls,
+    .page-header-actions,
+    .custom-column-row,
     .modal-header {
         flex-direction: column;
+        align-items: flex-start;
+    }
+
+    .custom-column-row {
+        display: flex;
+        width: 100%;
+    }
+
+    .custom-column-row .text-input {
+        width: 100%;
+    }
+
+    .export-modal-actions {
         align-items: flex-start;
     }
 
