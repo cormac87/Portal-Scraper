@@ -1,0 +1,185 @@
+@page "/todos"
+@inject IDbContextFactory<ApplicationDbContext> DbFactory
+
+<PageTitle>Todos</PageTitle>
+
+<section class="page-header">
+    <div>
+        <p class="eyebrow">EF Core demo</p>
+        <h1>Todo list</h1>
+    </div>
+    <p class="lead">
+        This page uses an <code>IDbContextFactory&lt;ApplicationDbContext&gt;</code> so each action gets a short-lived
+        EF Core context.
+    </p>
+</section>
+
+<EditForm Model="_newItem" OnValidSubmit="AddTodoAsync" class="todo-form">
+    <DataAnnotationsValidator />
+    <ValidationSummary />
+
+    <label class="field-label" for="todo-title">Title</label>
+    <InputText id="todo-title" class="text-input" @bind-Value="_newItem.Title" />
+
+    <button class="primary-button" type="submit" disabled="@_isSubmitting">
+        @_submitLabel
+    </button>
+</EditForm>
+
+@if (!string.IsNullOrWhiteSpace(_errorMessage))
+{
+    <p class="error-message">@_errorMessage</p>
+}
+
+@if (_items.Count == 0)
+{
+    <section class="empty-state">
+        <h2>No items yet</h2>
+        <p>Add your first record to confirm the SQL Server connection and EF Core pipeline.</p>
+    </section>
+}
+else
+{
+    <ul class="todo-list">
+        @foreach (var item in _items)
+        {
+            <li class="todo-item" @key="item.Id">
+                <div>
+                    <p class="@GetTitleClass(item)">@item.Title</p>
+                    <p class="todo-meta">Created @item.CreatedAtUtc.ToLocalTime().ToString("g")</p>
+                </div>
+
+                <div class="todo-actions">
+                    <button class="secondary-button" @onclick="() => ToggleAsync(item.Id)">
+                        @(item.IsComplete ? "Mark open" : "Complete")
+                    </button>
+                    <button class="danger-button" @onclick="() => DeleteAsync(item.Id)">
+                        Delete
+                    </button>
+                </div>
+            </li>
+        }
+    </ul>
+}
+
+@code {
+    private readonly List<TodoItem> _items = [];
+    private TodoItem _newItem = new();
+    private bool _isSubmitting;
+    private string? _errorMessage;
+
+    private string _submitLabel => _isSubmitting ? "Saving..." : "Add item";
+
+    protected override async Task OnInitializedAsync()
+    {
+        await RefreshAsync();
+    }
+
+    private async Task RefreshAsync()
+    {
+        try
+        {
+            await using var db = await DbFactory.CreateDbContextAsync();
+
+            var items = await db.TodoItems
+                .AsNoTracking()
+                .OrderBy(item => item.IsComplete)
+                .ThenBy(item => item.CreatedAtUtc)
+                .ToListAsync();
+
+            _items.Clear();
+            _items.AddRange(items);
+        }
+        catch
+        {
+            _items.Clear();
+            _errorMessage ??= "Unable to load items. Check the connection string and run the database migration.";
+        }
+    }
+
+    private async Task AddTodoAsync()
+    {
+        _isSubmitting = true;
+        _errorMessage = null;
+
+        try
+        {
+            await using var db = await DbFactory.CreateDbContextAsync();
+            var title = _newItem.Title.Trim();
+
+            if (string.IsNullOrWhiteSpace(title))
+            {
+                _errorMessage = "Title is required.";
+                return;
+            }
+
+            db.TodoItems.Add(new TodoItem
+            {
+                Title = title
+            });
+
+            await db.SaveChangesAsync();
+
+            _newItem = new TodoItem();
+            await RefreshAsync();
+        }
+        catch
+        {
+            _errorMessage = "Unable to save the item. Check the connection string and confirm the database exists.";
+        }
+        finally
+        {
+            _isSubmitting = false;
+        }
+    }
+
+    private async Task ToggleAsync(int id)
+    {
+        _errorMessage = null;
+
+        try
+        {
+            await using var db = await DbFactory.CreateDbContextAsync();
+            var item = await db.TodoItems.FindAsync(id);
+
+            if (item is null)
+            {
+                return;
+            }
+
+            item.IsComplete = !item.IsComplete;
+            await db.SaveChangesAsync();
+            await RefreshAsync();
+        }
+        catch
+        {
+            _errorMessage = "Unable to update the item.";
+        }
+    }
+
+    private async Task DeleteAsync(int id)
+    {
+        _errorMessage = null;
+
+        try
+        {
+            await using var db = await DbFactory.CreateDbContextAsync();
+            var item = await db.TodoItems.FindAsync(id);
+
+            if (item is null)
+            {
+                return;
+            }
+
+            db.TodoItems.Remove(item);
+            await db.SaveChangesAsync();
+            await RefreshAsync();
+        }
+        catch
+        {
+            _errorMessage = "Unable to delete the item.";
+        }
+    }
+
+    private static string GetTitleClass(TodoItem item) => item.IsComplete ? "todo-title complete" : "todo-title";
+}

@@ -1,0 +1,11 @@
+bin/
+obj/
+.vs/
+.idea/
+*.user
+*.suo
+*.swp
+*.dbmdl
+*.jfm
+*.sqlproj.user
+*.dacpac

@@ -1,0 +1,32 @@
+<nav class="pagination-controls" aria-label="Pagination">
+    <span>@Summary</span>
+    <div>
+        <button class="secondary-button" type="button" @onclick="OnPrevious" disabled="@(IsBusy || CurrentPage <= 1)">
+            Previous
+        </button>
+        <span>Page @CurrentPage of @TotalPages</span>
+        <button class="secondary-button" type="button" @onclick="OnNext" disabled="@(IsBusy || CurrentPage >= TotalPages)">
+            Next
+        </button>
+    </div>
+</nav>
+
+@code {
+    [Parameter]
+    public string Summary { get; set; } = string.Empty;
+
+    [Parameter]
+    public int CurrentPage { get; set; } = 1;
+
+    [Parameter]
+    public int TotalPages { get; set; } = 1;
+
+    [Parameter]
+    public bool IsBusy { get; set; }
+
+    [Parameter]
+    public EventCallback OnPrevious { get; set; }
+
+    [Parameter]
+    public EventCallback OnNext { get; set; }
+}

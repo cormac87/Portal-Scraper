@@ -1,0 +1,1583 @@
+@page "/planning"
+@using System.Data
+@using System.Data.Common
+@using System.Globalization
+@using System.Text
+@using System.Text.RegularExpressions
+@inject IDbContextFactory<ApplicationDbContext> DbFactory
+@inject IPlanningPortalScraper Scraper
+
+<PageTitle>Planning Portal Scraper</PageTitle>
+
+<section class="page-header">
+    <div>
+        <p class="eyebrow">Idox Public Access</p>
+        <h1>Planning portal scraper</h1>
+    </div>
+    <button class="primary-button" type="button" @onclick="ScrapeWeeklyAsync" disabled="@_isScraping">
+        @_scrapeButtonLabel
+    </button>
+</section>
+
+<section class="planning-summary">
+    <article class="stat-card">
+        <span>Authorities</span>
+        <strong>@_authorities.Count(authority => !string.IsNullOrWhiteSpace(authority.Website))</strong>
+    </article>
+    <article class="stat-card">
+        <span>Applications</span>
+        <strong>@_applicationTotalCount</strong>
+    </article>
+    <article class="stat-card">
+        <span>Documents</span>
+        <strong>@_documentTotalCount</strong>
+    </article>
+</section>
+
+<section class="planning-search">
+    <form class="planning-search-form" @onsubmit="SearchAsync" @onsubmit:preventDefault="true">
+        <label class="field-label">Keyword search criteria</label>
+        <div class="planning-search-criteria">
+            @for (var index = 0; index < _searchCriteria.Count; index++)
+            {
+                var criterion = _searchCriteria[index];
+                <div class="planning-search-row" @key="criterion">
+                    <input id="@GetSearchCriterionInputId(index)"
+                           class="text-input"
+                           placeholder="@GetSearchCriterionPlaceholder(index)"
+                           aria-label="@GetSearchCriterionLabel(index)"
+                           @bind="criterion.Text"
+                           @bind:event="oninput" />
+                    @if (_searchCriteria.Count > 1)
+                    {
+                        <button class="secondary-button" type="button" @onclick="() => RemoveSearchCriterion(criterion)" disabled="@_isSearching">
+                            Remove
+                        </button>
+                    }
+                </div>
+            }
+        </div>
+        <div class="planning-search-actions">
+            <button class="secondary-button" type="button" @onclick="AddSearchCriterion" disabled="@_isSearching">
+                Add criterion
+            </button>
+            <button class="primary-button" type="submit" disabled="@_isSearching">
+                @_searchButtonLabel
+            </button>
+            @if (_searchHasRun)
+            {
+                <button class="secondary-button" type="button" @onclick="ClearSearch">
+                    Clear
+                </button>
+            }
+        </div>
+    </form>
+
+    @if (_searchHasRun && !_isSearching)
+    {
+        <p class="search-summary">
+            @SearchPaginationSummary for <strong>@_lastSearchText</strong>
+        </p>
+    }
+</section>
+
+@if (!string.IsNullOrWhiteSpace(_errorMessage))
+{
+    <p class="error-message">@_errorMessage</p>
+}
+
+@if (_lastResult is not null)
+{
+    <section class="scrape-result">
+        <div>
+            <h2>Last scrape</h2>
+            <p>
+                @FormatDateTime(_lastResult.StartedAtUtc) to @FormatDateTime(_lastResult.FinishedAtUtc):
+                @_lastResult.ApplicationsScraped applications scraped,
+                @_lastResult.DocumentsScraped documents found.
+            </p>
+        </div>
+
+        @if (_lastResult.Messages.Count > 0)
+        {
+            <ul>
+                @foreach (var message in _lastResult.Messages)
+                {
+                    <li>@message</li>
+                }
+            </ul>
+        }
+    </section>
+}
+
+@if (_searchHasRun)
+{
+    @if (_isSearching)
+    {
+        <section class="empty-state">
+            <h2>Searching planning data</h2>
+            <p>Checking indexed application and document text.</p>
+        </section>
+    }
+    else if (_searchResults.Count == 0)
+    {
+        <section class="empty-state">
+            <h2>No keyword matches</h2>
+            <p>Try a different keyword or phrase.</p>
+        </section>
+    }
+    else
+    {
+        <PaginationControls Summary="@SearchPaginationSummary"
+                            CurrentPage="@_searchPage"
+                            TotalPages="@SearchTotalPages"
+                            IsBusy="@_isSearching"
+                            OnPrevious="PreviousSearchPageAsync"
+                            OnNext="NextSearchPageAsync" />
+
+        <section class="search-results">
+            @foreach (var result in _searchResults)
+            {
+                <article class="planning-card application-summary-card"
+                         role="button"
+                         tabindex="0"
+                         @key="GetSearchResultKey(result)"
+                         @onclick="() => OpenApplicationModalAsync(result.PlanningApplicationId)"
+                         @onkeydown="args => HandleApplicationCardKeyDownAsync(result.PlanningApplicationId, args)">
+                    <header>
+                        <div>
+                            <p class="planning-authority">@result.PlanningAuthorityName</p>
+                            <h2>@DisplayValue(result.ApplicationReference)</h2>
+                        </div>
+                    </header>
+
+                    <p class="planning-title">@result.ApplicationTitle</p>
+                </article>
+            }
+        </section>
+
+        <PaginationControls Summary="@SearchPaginationSummary"
+                            CurrentPage="@_searchPage"
+                            TotalPages="@SearchTotalPages"
+                            IsBusy="@_isSearching"
+                            OnPrevious="PreviousSearchPageAsync"
+                            OnNext="NextSearchPageAsync" />
+    }
+}
+else if (_isLoading)
+{
+    <section class="empty-state">
+        <h2>Loading planning data</h2>
+        <p>Reading saved planning applications from the database.</p>
+    </section>
+}
+else if (_applications.Count == 0)
+{
+    <section class="empty-state">
+        <h2>No planning applications saved</h2>
+        <p>Add authority URLs to <code>PlanningAuthority</code>, then run <strong>Scrape Weekly</strong>.</p>
+    </section>
+}
+else
+{
+    <PaginationControls Summary="@ApplicationPaginationSummary"
+                        CurrentPage="@_applicationPage"
+                        TotalPages="@ApplicationTotalPages"
+                        IsBusy="@_isLoading"
+                        OnPrevious="PreviousApplicationPageAsync"
+                        OnNext="NextApplicationPageAsync" />
+
+    <section class="planning-list">
+        @foreach (var application in _applications)
+        {
+            <article class="planning-card application-summary-card"
+                     role="button"
+                     tabindex="0"
+                     @key="application.Id"
+                     @onclick="() => OpenApplicationModalAsync(application.Id)"
+                     @onkeydown="args => HandleApplicationCardKeyDownAsync(application.Id, args)">
+                <header>
+                    <div>
+                        <p class="planning-authority">@application.PlanningAuthority.Name</p>
+                        <h2>@DisplayValue(application.ApplicationReference)</h2>
+                    </div>
+                </header>
+
+                <p class="planning-title">@ApplicationDescription(application)</p>
+            </article>
+        }
+    </section>
+
+    <PaginationControls Summary="@ApplicationPaginationSummary"
+                        CurrentPage="@_applicationPage"
+                        TotalPages="@ApplicationTotalPages"
+                        IsBusy="@_isLoading"
+                        OnPrevious="PreviousApplicationPageAsync"
+                        OnNext="NextApplicationPageAsync" />
+}
+
+@if (_isApplicationModalOpen && _selectedApplication is not null)
+{
+    <div class="modal-backdrop" @onclick="CloseApplicationModal">
+        <section class="modal-panel application-modal" role="dialog" aria-modal="true" aria-labelledby="application-modal-title" @onclick:stopPropagation="true">
+            <header class="modal-header">
+                <div>
+                    <p class="planning-authority">@_selectedApplication.PlanningAuthority.Name</p>
+                    <h2 id="application-modal-title">@DisplayValue(_selectedApplication.ApplicationReference)</h2>
+                    <p class="planning-title">@ApplicationDescription(_selectedApplication)</p>
+                </div>
+                <button class="secondary-button" type="button" @onclick="CloseApplicationModal">Close</button>
+            </header>
+
+            <dl class="modal-details">
+                <div>
+                    <dt>Status</dt>
+                    <dd>@DisplayValue(_selectedApplication.Status)</dd>
+                </div>
+                <div>
+                    <dt>Address</dt>
+                    <dd>@DisplayValue(_selectedApplication.Address)</dd>
+                </div>
+                <div>
+                    <dt>Received</dt>
+                    <dd>@FormatDate(_selectedApplication.ReceivedDate)</dd>
+                </div>
+                <div>
+                    <dt>Validated</dt>
+                    <dd>@FormatDate(_selectedApplication.ValidatedDate)</dd>
+                </div>
+                <div>
+                    <dt>Applicant name</dt>
+                    <dd>@DisplayValue(_selectedApplication.ApplicantName)</dd>
+                </div>
+                <div>
+                    <dt>Applicant email</dt>
+                    <dd>@DisplayValue(_selectedApplication.ApplicantEmail)</dd>
+                </div>
+                <div>
+                    <dt>Applicant phone</dt>
+                    <dd>@DisplayValue(_selectedApplication.ApplicantPhone)</dd>
+                </div>
+                <div>
+                    <dt>Agent name</dt>
+                    <dd>@DisplayValue(_selectedApplication.AgentName)</dd>
+                </div>
+                <div>
+                    <dt>Agent company</dt>
+                    <dd>@DisplayValue(_selectedApplication.CompanyName)</dd>
+                </div>
+                <div>
+                    <dt>Agent email</dt>
+                    <dd>@DisplayValue(_selectedApplication.AgentEmail)</dd>
+                </div>
+                <div>
+                    <dt>Agent phone</dt>
+                    <dd>@DisplayValue(_selectedApplication.AgentPhone)</dd>
+                </div>
+                <div>
+                    <dt>Source key</dt>
+                    <dd>@DisplayValue(_selectedApplication.SourceKey)</dd>
+                </div>
+                <div>
+                    <dt>Scraped</dt>
+                    <dd>@FormatDateTime(_selectedApplication.ScrapedAt)</dd>
+                </div>
+            </dl>
+
+            @if (!string.IsNullOrWhiteSpace(_selectedApplication.SourceUrl))
+            {
+                <div class="modal-links">
+                    <a href="@_selectedApplication.SourceUrl" target="_blank" rel="noopener noreferrer">Open portal record</a>
+                </div>
+            }
+
+            <footer class="modal-actions">
+                <button class="primary-button" type="button" @onclick="OpenDocumentsModal" disabled="@(_selectedApplication.PlanningDocuments.Count == 0)">
+                    Show all documents (@_selectedApplication.PlanningDocuments.Count)
+                </button>
+                <button class="secondary-button" type="button" @onclick="OpenRelevantDocumentsModal" disabled="@(!CanShowRelevantDocuments)">
+                    Show relevant documents
+                </button>
+            </footer>
+        </section>
+    </div>
+}
+
+@if (_isDocumentsModalOpen && _selectedApplication is not null)
+{
+    <div class="modal-backdrop modal-backdrop-top" @onclick="CloseDocumentsModal">
+        <section class="modal-panel documents-modal" role="dialog" aria-modal="true" aria-labelledby="documents-modal-title" @onclick:stopPropagation="true">
+            <header class="modal-header">
+                <div>
+                    <p class="planning-authority">@DisplayValue(_selectedApplication.ApplicationReference)</p>
+                    <h2 id="documents-modal-title">Documents (@_selectedApplication.PlanningDocuments.Count)</h2>
+                </div>
+                <button class="secondary-button" type="button" @onclick="CloseDocumentsModal">Close</button>
+            </header>
+
+            <div class="document-list modal-document-list">
+                @foreach (var document in _selectedApplication.PlanningDocuments.OrderByDescending(document => document.PublishedDate).ThenBy(document => document.Name))
+                {
+                    var isExpanded = _expandedDocumentId == document.Id;
+                    <article class="document-card modal-document-card"
+                             role="button"
+                             tabindex="0"
+                             @key="document.Id"
+                             @onclick="() => ToggleDocument(document.Id)"
+                             @onkeydown="args => HandleDocumentCardKeyDown(document.Id, args)">
+                        <header>
+                            <div>
+                                <h3>@document.Name</h3>
+                                <p>@document.DocumentType | @FormatDate(document.PublishedDate) | @DisplayValue(document.ParseStatus)</p>
+                            </div>
+                            <button class="secondary-button" type="button" @onclick="() => ToggleDocument(document.Id)" @onclick:stopPropagation="true">
+                                @(isExpanded ? "Minimize" : "View text")
+                            </button>
+                        </header>
+
+                        @if (isExpanded)
+                        {
+                            <div class="document-expanded-content" @onclick:stopPropagation="true">
+                                @if (!string.IsNullOrWhiteSpace(document.Url))
+                                {
+                                    <div class="planning-links">
+                                        <a href="@document.Url" target="_blank" rel="noopener noreferrer">Open source document</a>
+                                    </div>
+                                }
+
+                                @if (!string.IsNullOrWhiteSpace(document.ContentText))
+                                {
+                                    <pre>@document.ContentText</pre>
+                                }
+                                else if (!string.IsNullOrWhiteSpace(document.ParseError))
+                                {
+                                    <p class="document-error">@document.ParseError</p>
+                                }
+                                else
+                                {
+                                    <p class="document-empty">No extracted text was stored for this document.</p>
+                                }
+                            </div>
+                        }
+                    </article>
+                }
+            </div>
+        </section>
+    </div>
+}
+
+@if (_isRelevantDocumentsModalOpen && _selectedApplication is not null)
+{
+    <div class="modal-backdrop modal-backdrop-top" @onclick="CloseRelevantDocumentsModal">
+        <section class="modal-panel documents-modal" role="dialog" aria-modal="true" aria-labelledby="relevant-documents-modal-title" @onclick:stopPropagation="true">
+            <header class="modal-header">
+                <div>
+                    <p class="planning-authority">@DisplayValue(_selectedApplication.ApplicationReference)</p>
+                    <h2 id="relevant-documents-modal-title">Relevant documents (@_relevantDocumentMatches.Count)</h2>
+                    @if (!string.IsNullOrWhiteSpace(_relevantDocumentCriteriaText))
+                    {
+                        <p class="modal-subtitle">Matches for @_relevantDocumentCriteriaText</p>
+                    }
+                </div>
+                <button class="secondary-button" type="button" @onclick="CloseRelevantDocumentsModal">Close</button>
+            </header>
+
+            @if (_relevantDocumentCriteriaFilters.Count > 0)
+            {
+                <fieldset class="relevant-criteria-filter">
+                    <legend>Criteria</legend>
+                    <div class="relevant-criteria-options">
+                        @foreach (var filter in _relevantDocumentCriteriaFilters)
+                        {
+                            <label class="criterion-checkbox" @key="filter.Id">
+                                <input type="checkbox"
+                                       checked="@filter.IsSelected"
+                                       @onchange="args => ToggleRelevantDocumentCriterion(filter, args)" />
+                                <span>@filter.Criterion.DisplayText</span>
+                            </label>
+                        }
+                    </div>
+                </fieldset>
+            }
+
+            @if (_relevantDocumentMatches.Count == 0)
+            {
+                <p class="document-empty">@RelevantDocumentsEmptyMessage</p>
+            }
+            else
+            {
+                <div class="document-list modal-document-list">
+                    @foreach (var match in _relevantDocumentMatches)
+                    {
+                        <article class="document-card modal-document-card relevant-document-card" @key="match.Document.Id">
+                            <header>
+                                <div>
+                                    <h3>@match.Document.Name</h3>
+                                    <p>@match.Document.DocumentType | @FormatDate(match.Document.PublishedDate) | @DisplayValue(match.Document.ParseStatus)</p>
+                                </div>
+                                <span class="match-count">@FormatMatchCount(match.MatchCount)</span>
+                            </header>
+
+                            <div class="document-expanded-content">
+                                @if (!string.IsNullOrWhiteSpace(match.Document.Url))
+                                {
+                                    <div class="planning-links">
+                                        <a href="@match.Document.Url" target="_blank" rel="noopener noreferrer">Open source document</a>
+                                    </div>
+                                }
+
+                                @foreach (var snippet in match.Snippets)
+                                {
+                                    <pre class="search-preview relevant-snippet">@((MarkupString)snippet.HighlightedHtml)</pre>
+                                }
+                            </div>
+                        </article>
+                    }
+                </div>
+            }
+        </section>
+    </div>
+}
+
+@code {
+    private const int ApplicationPageSize = 20;
+    private const int SearchPageSize = 20;
+    private const int RelevantDocumentContextWordCount = 200;
+
+    private const string FullTextSearchAvailabilitySql = @"
+SELECT CAST(
+    CASE
+        WHEN FULLTEXTSERVICEPROPERTY('IsFullTextInstalled') = 1
+            AND EXISTS (
+                SELECT 1
+                FROM sys.fulltext_indexes
+                WHERE object_id = OBJECT_ID(N'dbo.PlanningApplication')
+            )
+            AND EXISTS (
+                SELECT 1
+                FROM sys.fulltext_indexes
+                WHERE object_id = OBJECT_ID(N'dbo.PlanningDocument')
+            )
+        THEN 1
+        ELSE 0
+    END AS int) AS [Value]";
+
+    private static readonly Regex KeywordRegex = new(@"[\p{L}\p{Nd}]+", RegexOptions.Compiled | RegexOptions.CultureInvariant);
+
+    private static readonly HashSet<string> IgnoredSearchTerms = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "a",
+        "an",
+        "and",
+        "are",
+        "as",
+        "at",
+        "be",
+        "by",
+        "for",
+        "from",
+        "in",
+        "into",
+        "is",
+        "it",
+        "of",
+        "on",
+        "or",
+        "that",
+        "the",
+        "to",
+        "with"
+    };
+
+    private List<PlanningAuthority> _authorities = [];
+    private List<PlanningApplication> _applications = [];
+    private List<PlanningSearchResult> _searchResults = [];
+    private List<SearchCriterionInput> _searchCriteria = [new()];
+    private List<string> _lastSearchConditions = [];
+    private List<FullTextSearchCriterion> _lastSearchCriteria = [];
+    private List<RelevantDocumentCriterionFilter> _relevantDocumentCriteriaFilters = [];
+    private List<RelevantDocumentMatch> _relevantDocumentMatches = [];
+    private WeeklyScrapeResult? _lastResult;
+    private int _applicationPage = 1;
+    private int _applicationTotalCount;
+    private int _documentTotalCount;
+    private int _searchPage = 1;
+    private int _searchTotalCount;
+    private bool _isLoading = true;
+    private bool _isScraping;
+    private bool _isSearching;
+    private bool _searchHasRun;
+    private bool _isApplicationModalOpen;
+    private bool _isDocumentsModalOpen;
+    private bool _isRelevantDocumentsModalOpen;
+    private PlanningApplication? _selectedApplication;
+    private Guid? _expandedDocumentId;
+    private string? _errorMessage;
+    private string? _lastSearchText;
+    private string? _relevantDocumentCriteriaText;
+
+    private string _scrapeButtonLabel => _isScraping ? "Scraping weekly..." : "Scrape Weekly";
+    private string _searchButtonLabel => _isSearching ? "Searching..." : "Search";
+    private int ApplicationTotalPages => GetTotalPages(_applicationTotalCount, ApplicationPageSize);
+    private int SearchTotalPages => GetTotalPages(_searchTotalCount, SearchPageSize);
+    private string ApplicationPaginationSummary => GetPaginationSummary(_applicationTotalCount, _applicationPage, ApplicationPageSize, "application");
+    private string SearchPaginationSummary => GetPaginationSummary(_searchTotalCount, _searchPage, SearchPageSize, "planning application");
+    private bool CanShowRelevantDocuments => _selectedApplication?.PlanningDocuments.Count > 0 && GetRelevantDocumentCriteria().Count > 0;
+    private string RelevantDocumentsEmptyMessage => _relevantDocumentCriteriaFilters.Any(filter => filter.IsSelected)
+        ? "No stored document text matched the selected criteria."
+        : "Select at least one criterion to show relevant documents.";
+
+    protected override async Task OnInitializedAsync()
+    {
+        await RefreshAsync();
+    }
+
+    private async Task ScrapeWeeklyAsync()
+    {
+        _isScraping = true;
+        _errorMessage = null;
+
+        try
+        {
+            _lastResult = await Scraper.ScrapeWeeklyAsync();
+            _applicationPage = 1;
+            await RefreshAsync();
+        }
+        catch (Exception ex)
+        {
+            _errorMessage = $"Unable to run weekly scrape: {ex.Message}";
+        }
+        finally
+        {
+            _isScraping = false;
+        }
+    }
+
+    private async Task RefreshAsync()
+    {
+        _isLoading = true;
+
+        try
+        {
+            await using var db = await DbFactory.CreateDbContextAsync();
+
+            _authorities = await db.PlanningAuthorities
+                .AsNoTracking()
+                .OrderBy(authority => authority.Name)
+                .ToListAsync();
+
+            _applicationTotalCount = await db.PlanningApplications.CountAsync();
+            _documentTotalCount = await db.PlanningDocuments.CountAsync();
+            ClampApplicationPage();
+
+            _applications = await db.PlanningApplications
+                .AsNoTracking()
+                .Include(application => application.PlanningAuthority)
+                .Include(application => application.PlanningDocuments)
+                .AsSplitQuery()
+                .OrderByDescending(application => application.ScrapedAt)
+                .ThenBy(application => application.ApplicationReference)
+                .ThenBy(application => application.Id)
+                .Skip(GetPageSkip(_applicationPage, ApplicationPageSize))
+                .Take(ApplicationPageSize)
+                .ToListAsync();
+        }
+        catch (Exception ex)
+        {
+            _errorMessage = $"Unable to load planning data: {ex.Message}";
+        }
+        finally
+        {
+            _isLoading = false;
+        }
+    }
+
+    private async Task SearchAsync()
+    {
+        var searchCriteria = BuildFullTextSearchCriteria(_searchCriteria);
+        if (searchCriteria.Count == 0)
+        {
+            ClearSearch();
+            return;
+        }
+
+        _isSearching = true;
+        _searchHasRun = true;
+        _searchPage = 1;
+        _searchTotalCount = 0;
+        _lastSearchText = FormatSearchCriteriaSummary(searchCriteria);
+        _lastSearchConditions = searchCriteria
+            .Select(criterion => criterion.SearchCondition)
+            .ToList();
+        _lastSearchCriteria = searchCriteria;
+        _errorMessage = null;
+
+        await LoadSearchPageAsync();
+    }
+
+    private async Task LoadSearchPageAsync()
+    {
+        if (_lastSearchConditions.Count == 0)
+        {
+            ClearSearch();
+            return;
+        }
+
+        _isSearching = true;
+        _errorMessage = null;
+
+        try
+        {
+            await using var db = await DbFactory.CreateDbContextAsync();
+            if (!await IsFullTextSearchAvailableAsync(db))
+            {
+                _searchHasRun = false;
+                _searchResults = [];
+                _errorMessage = "Keyword search requires SQL Server Full-Text Search and the planning full-text indexes. Install the SQL Server Full-Text feature, then run the schema update script.";
+                return;
+            }
+
+            _searchTotalCount = await ExecuteSearchCountAsync(db, _lastSearchConditions);
+            ClampSearchPage();
+            _searchResults = _searchTotalCount == 0
+                ? []
+                : await ExecuteSearchAsync(
+                    db,
+                    _lastSearchConditions,
+                    GetPageSkip(_searchPage, SearchPageSize),
+                    SearchPageSize);
+        }
+        catch (Exception ex)
+        {
+            _searchResults = [];
+            _searchTotalCount = 0;
+            _errorMessage = $"Unable to run keyword search: {ex.Message}";
+        }
+        finally
+        {
+            _isSearching = false;
+        }
+    }
+
+    private void ClearSearch()
+    {
+        _searchResults = [];
+        _searchHasRun = false;
+        _searchPage = 1;
+        _searchTotalCount = 0;
+        _lastSearchConditions = [];
+        _lastSearchCriteria = [];
+        _lastSearchText = null;
+    }
+
+    private void AddSearchCriterion()
+    {
+        _searchCriteria.Add(new SearchCriterionInput());
+    }
+
+    private void RemoveSearchCriterion(SearchCriterionInput criterion)
+    {
+        if (_searchCriteria.Count <= 1)
+        {
+            return;
+        }
+
+        _searchCriteria.Remove(criterion);
+
+        if (_searchCriteria.Count == 0)
+        {
+            _searchCriteria.Add(new SearchCriterionInput());
+        }
+    }
+
+    private async Task PreviousApplicationPageAsync()
+    {
+        if (_applicationPage <= 1)
+        {
+            return;
+        }
+
+        _applicationPage--;
+        await RefreshAsync();
+    }
+
+    private async Task NextApplicationPageAsync()
+    {
+        if (_applicationPage >= ApplicationTotalPages)
+        {
+            return;
+        }
+
+        _applicationPage++;
+        await RefreshAsync();
+    }
+
+    private async Task PreviousSearchPageAsync()
+    {
+        if (_searchPage <= 1)
+        {
+            return;
+        }
+
+        _searchPage--;
+        await LoadSearchPageAsync();
+    }
+
+    private async Task NextSearchPageAsync()
+    {
+        if (_searchPage >= SearchTotalPages)
+        {
+            return;
+        }
+
+        _searchPage++;
+        await LoadSearchPageAsync();
+    }
+
+    private async Task OpenApplicationModalAsync(Guid applicationId)
+    {
+        _errorMessage = null;
+        _isDocumentsModalOpen = false;
+        _isRelevantDocumentsModalOpen = false;
+        _relevantDocumentCriteriaFilters = [];
+        _relevantDocumentMatches = [];
+        _relevantDocumentCriteriaText = null;
+        _expandedDocumentId = null;
+
+        try
+        {
+            await using var db = await DbFactory.CreateDbContextAsync();
+            _selectedApplication = await db.PlanningApplications
+                .AsNoTracking()
+                .Include(application => application.PlanningAuthority)
+                .Include(application => application.PlanningDocuments)
+                .AsSplitQuery()
+                .FirstOrDefaultAsync(application => application.Id == applicationId);
+
+            if (_selectedApplication is null)
+            {
+                _isApplicationModalOpen = false;
+                _errorMessage = "Unable to find the selected planning application.";
+                return;
+            }
+
+            _isApplicationModalOpen = true;
+        }
+        catch (Exception ex)
+        {
+            _isApplicationModalOpen = false;
+            _selectedApplication = null;
+            _errorMessage = $"Unable to load planning application details: {ex.Message}";
+        }
+    }
+
+    private async Task HandleApplicationCardKeyDownAsync(Guid applicationId, KeyboardEventArgs args)
+    {
+        if (args.Key is "Enter" or " " or "Spacebar")
+        {
+            await OpenApplicationModalAsync(applicationId);
+        }
+    }
+
+    private void CloseApplicationModal()
+    {
+        _isApplicationModalOpen = false;
+        _isDocumentsModalOpen = false;
+        _isRelevantDocumentsModalOpen = false;
+        _expandedDocumentId = null;
+        _relevantDocumentCriteriaFilters = [];
+        _relevantDocumentMatches = [];
+        _relevantDocumentCriteriaText = null;
+        _selectedApplication = null;
+    }
+
+    private void OpenDocumentsModal()
+    {
+        if (_selectedApplication?.PlanningDocuments.Count > 0)
+        {
+            _isDocumentsModalOpen = true;
+            _isRelevantDocumentsModalOpen = false;
+            _expandedDocumentId = null;
+        }
+    }
+
+    private void OpenRelevantDocumentsModal()
+    {
+        if (_selectedApplication?.PlanningDocuments.Count is null or 0)
+        {
+            return;
+        }
+
+        var criteria = GetRelevantDocumentCriteria();
+        if (criteria.Count == 0)
+        {
+            return;
+        }
+
+        _relevantDocumentCriteriaText = FormatSearchCriteriaSummary(criteria);
+        _relevantDocumentCriteriaFilters = criteria
+            .Select((criterion, index) => new RelevantDocumentCriterionFilter
+            {
+                Id = index,
+                Criterion = criterion,
+                IsSelected = true
+            })
+            .ToList();
+        RefreshRelevantDocumentMatches();
+        _isDocumentsModalOpen = false;
+        _isRelevantDocumentsModalOpen = true;
+        _expandedDocumentId = null;
+    }
+
+    private void CloseDocumentsModal()
+    {
+        _isDocumentsModalOpen = false;
+        _expandedDocumentId = null;
+    }
+
+    private void CloseRelevantDocumentsModal()
+    {
+        _isRelevantDocumentsModalOpen = false;
+        _relevantDocumentCriteriaFilters = [];
+        _relevantDocumentMatches = [];
+        _relevantDocumentCriteriaText = null;
+    }
+
+    private void ToggleRelevantDocumentCriterion(RelevantDocumentCriterionFilter filter, ChangeEventArgs args)
+    {
+        filter.IsSelected = args.Value is bool isSelected && isSelected;
+        RefreshRelevantDocumentMatches();
+    }
+
+    private void RefreshRelevantDocumentMatches()
+    {
+        var selectedCriteria = _relevantDocumentCriteriaFilters
+            .Where(filter => filter.IsSelected)
+            .Select(filter => filter.Criterion)
+            .ToList();
+
+        _relevantDocumentCriteriaText = selectedCriteria.Count == 0
+            ? null
+            : FormatSearchCriteriaSummary(selectedCriteria);
+
+        _relevantDocumentMatches = _selectedApplication is null || selectedCriteria.Count == 0
+            ? []
+            : BuildRelevantDocumentMatches(_selectedApplication.PlanningDocuments, selectedCriteria);
+    }
+
+    private void ToggleDocument(Guid documentId)
+    {
+        _expandedDocumentId = _expandedDocumentId == documentId ? null : documentId;
+    }
+
+    private void HandleDocumentCardKeyDown(Guid documentId, KeyboardEventArgs args)
+    {
+        if (args.Key is "Enter" or " " or "Spacebar")
+        {
+            ToggleDocument(documentId);
+        }
+    }
+
+    private static async Task<bool> IsFullTextSearchAvailableAsync(ApplicationDbContext db)
+    {
+        var result = await ExecuteScalarAsync(db, FullTextSearchAvailabilitySql);
+
+        return result is not null
+            && result != DBNull.Value
+            && Convert.ToInt32(result, CultureInfo.InvariantCulture) == 1;
+    }
+
+    private static async Task<List<PlanningSearchResult>> ExecuteSearchAsync(
+        ApplicationDbContext db,
+        IReadOnlyList<string> searchConditions,
+        int skip,
+        int take)
+    {
+        var results = new List<PlanningSearchResult>();
+        var connection = db.Database.GetDbConnection();
+        var shouldCloseConnection = connection.State == ConnectionState.Closed;
+
+        if (shouldCloseConnection)
+        {
+            await connection.OpenAsync();
+        }
+
+        try
+        {
+            await using var command = connection.CreateCommand();
+            command.CommandText = BuildKeywordSearchSql(searchConditions.Count);
+            AddSearchConditionParameters(command, searchConditions);
+            AddParameter(command, "@SearchCriteriaCount", searchConditions.Count);
+            AddParameter(command, "@Skip", skip);
+            AddParameter(command, "@Take", take);
+
+            await using var reader = await command.ExecuteReaderAsync();
+            while (await reader.ReadAsync())
+            {
+                results.Add(new PlanningSearchResult
+                {
+                    MatchType = reader.GetString(reader.GetOrdinal("MatchType")),
+                    PlanningApplicationId = reader.GetGuid(reader.GetOrdinal("PlanningApplicationId")),
+                    PlanningDocumentId = GetNullableGuid(reader, "PlanningDocumentId"),
+                    PlanningAuthorityName = reader.GetString(reader.GetOrdinal("PlanningAuthorityName")),
+                    ApplicationReference = GetNullableString(reader, "ApplicationReference"),
+                    ApplicationTitle = reader.GetString(reader.GetOrdinal("ApplicationTitle")),
+                    Status = GetNullableString(reader, "Status"),
+                    Address = GetNullableString(reader, "Address"),
+                    ReceivedDate = GetNullableDateTime(reader, "ReceivedDate"),
+                    ValidatedDate = GetNullableDateTime(reader, "ValidatedDate"),
+                    DocumentName = GetNullableString(reader, "DocumentName"),
+                    DocumentType = GetNullableString(reader, "DocumentType"),
+                    Url = GetNullableString(reader, "Url"),
+                    PublishedDate = GetNullableDateTime(reader, "PublishedDate"),
+                    SearchRank = reader.GetInt32(reader.GetOrdinal("SearchRank")),
+                    PreviewText = GetNullableString(reader, "PreviewText")
+                });
+            }
+        }
+        finally
+        {
+            if (shouldCloseConnection)
+            {
+                await connection.CloseAsync();
+            }
+        }
+
+        return results;
+    }
+
+    private static string BuildKeywordSearchSql(int searchCriteriaCount)
+    {
+        var sql = new StringBuilder();
+        AppendMatchedApplicationsCte(sql, searchCriteriaCount, includeRankAndFlags: true);
+        sql.AppendLine(@",
+RankedApplications AS
+(
+    SELECT
+        [PlanningApplicationId],
+        MAX([SearchRank]) AS [SearchRank],
+        MAX([HasApplicationMatch]) AS [HasApplicationMatch],
+        MAX([HasDocumentMatch]) AS [HasDocumentMatch]
+    FROM [MatchedApplications]
+    GROUP BY [PlanningApplicationId]
+    HAVING COUNT(DISTINCT [CriterionIndex]) = @SearchCriteriaCount
+)
+SELECT
+    CAST(
+        CASE
+            WHEN [RankedApplications].[HasApplicationMatch] = 1 AND [RankedApplications].[HasDocumentMatch] = 1 THEN N'Application + Document'
+            WHEN [RankedApplications].[HasDocumentMatch] = 1 THEN N'Document'
+            ELSE N'Application'
+        END AS nvarchar(30)) AS [MatchType],
+    [application].[Id] AS [PlanningApplicationId],
+    CAST(NULL AS uniqueidentifier) AS [PlanningDocumentId],
+    [authority].[Name] AS [PlanningAuthorityName],
+    [application].[ApplicationReference] AS [ApplicationReference],
+    [application].[Title] AS [ApplicationTitle],
+    [application].[Status] AS [Status],
+    [application].[Address] AS [Address],
+    [application].[ReceivedDate] AS [ReceivedDate],
+    [application].[ValidatedDate] AS [ValidatedDate],
+    CAST(NULL AS nvarchar(255)) AS [DocumentName],
+    CAST(NULL AS nvarchar(50)) AS [DocumentType],
+    [application].[SourceUrl] AS [Url],
+    CAST(NULL AS datetime2(7)) AS [PublishedDate],
+    [RankedApplications].[SearchRank],
+    CAST(NULL AS nvarchar(max)) AS [PreviewText]
+FROM [RankedApplications]
+    INNER JOIN [dbo].[PlanningApplication] AS [application]
+        ON [application].[Id] = [RankedApplications].[PlanningApplicationId]
+    INNER JOIN [dbo].[PlanningAuthority] AS [authority]
+        ON [authority].[Id] = [application].[PlanningAuthorityId]
+ORDER BY [RankedApplications].[SearchRank] DESC,
+    [application].[ValidatedDate] DESC,
+    [application].[ReceivedDate] DESC,
+    [application].[ApplicationReference],
+    [application].[Title],
+    [application].[Id]
+OFFSET @Skip ROWS FETCH NEXT @Take ROWS ONLY");
+
+        return sql.ToString();
+    }
+
+    private static string BuildKeywordSearchCountSql(int searchCriteriaCount)
+    {
+        var sql = new StringBuilder();
+        AppendMatchedApplicationsCte(sql, searchCriteriaCount, includeRankAndFlags: false);
+        sql.AppendLine(@",
+RankedApplications AS
+(
+    SELECT [PlanningApplicationId]
+    FROM [MatchedApplications]
+    GROUP BY [PlanningApplicationId]
+    HAVING COUNT(DISTINCT [CriterionIndex]) = @SearchCriteriaCount
+)
+SELECT CAST(COUNT_BIG(*) AS int) AS [Value]
+FROM [RankedApplications]");
+
+        return sql.ToString();
+    }
+
+    private static void AppendMatchedApplicationsCte(StringBuilder sql, int searchCriteriaCount, bool includeRankAndFlags)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(searchCriteriaCount, 1);
+
+        sql.AppendLine("WITH MatchedApplications AS");
+        sql.AppendLine("(");
+
+        for (var index = 0; index < searchCriteriaCount; index++)
+        {
+            if (index > 0)
+            {
+                sql.AppendLine();
+                sql.AppendLine("    UNION ALL");
+                sql.AppendLine();
+            }
+
+            AppendMatchedDocumentSelect(sql, index, includeRankAndFlags);
+            sql.AppendLine();
+            sql.AppendLine("    UNION ALL");
+            sql.AppendLine();
+            AppendMatchedApplicationSelect(sql, index, includeRankAndFlags);
+        }
+
+        sql.AppendLine(")");
+    }
+
+    private static void AppendMatchedDocumentSelect(StringBuilder sql, int index, bool includeRankAndFlags)
+    {
+        if (includeRankAndFlags)
+        {
+            sql.AppendLine($@"    SELECT
+        {index} AS [CriterionIndex],
+        [matches].[RANK] AS [SearchRank],
+        [document].[PlanningApplicationId],
+        CAST(0 AS int) AS [HasApplicationMatch],
+        CAST(1 AS int) AS [HasDocumentMatch]
+    FROM CONTAINSTABLE([dbo].[PlanningDocument], ([Name], [DocumentType], [ContentText]), @SearchCondition{index}) AS [matches]
+    INNER JOIN [dbo].[PlanningDocument] AS [document]
+        ON [document].[Id] = [matches].[KEY]");
+            return;
+        }
+
+        sql.AppendLine($@"    SELECT
+        {index} AS [CriterionIndex],
+        [document].[PlanningApplicationId]
+    FROM CONTAINSTABLE([dbo].[PlanningDocument], ([Name], [DocumentType], [ContentText]), @SearchCondition{index}) AS [matches]
+    INNER JOIN [dbo].[PlanningDocument] AS [document]
+        ON [document].[Id] = [matches].[KEY]");
+    }
+
+    private static void AppendMatchedApplicationSelect(StringBuilder sql, int index, bool includeRankAndFlags)
+    {
+        if (includeRankAndFlags)
+        {
+            sql.AppendLine($@"    SELECT
+        {index} AS [CriterionIndex],
+        [matches].[RANK] AS [SearchRank],
+        [matches].[KEY] AS [PlanningApplicationId],
+        CAST(1 AS int) AS [HasApplicationMatch],
+        CAST(0 AS int) AS [HasDocumentMatch]
+    FROM CONTAINSTABLE([dbo].[PlanningApplication], ([Title], [Description], [Address]), @SearchCondition{index}) AS [matches]");
+            return;
+        }
+
+        sql.AppendLine($@"    SELECT
+        {index} AS [CriterionIndex],
+        [matches].[KEY] AS [PlanningApplicationId]
+    FROM CONTAINSTABLE([dbo].[PlanningApplication], ([Title], [Description], [Address]), @SearchCondition{index}) AS [matches]");
+    }
+
+    private static async Task<int> ExecuteSearchCountAsync(ApplicationDbContext db, IReadOnlyList<string> searchConditions)
+    {
+        var connection = db.Database.GetDbConnection();
+        var shouldCloseConnection = connection.State == ConnectionState.Closed;
+
+        if (shouldCloseConnection)
+        {
+            await connection.OpenAsync();
+        }
+
+        try
+        {
+            await using var command = connection.CreateCommand();
+            command.CommandText = BuildKeywordSearchCountSql(searchConditions.Count);
+            AddSearchConditionParameters(command, searchConditions);
+            AddParameter(command, "@SearchCriteriaCount", searchConditions.Count);
+            var result = await command.ExecuteScalarAsync();
+
+            return result is null || result == DBNull.Value
+                ? 0
+                : Convert.ToInt32(result, CultureInfo.InvariantCulture);
+        }
+        finally
+        {
+            if (shouldCloseConnection)
+            {
+                await connection.CloseAsync();
+            }
+        }
+    }
+
+    private static async Task<object?> ExecuteScalarAsync(ApplicationDbContext db, string commandText)
+    {
+        var connection = db.Database.GetDbConnection();
+        var shouldCloseConnection = connection.State == ConnectionState.Closed;
+
+        if (shouldCloseConnection)
+        {
+            await connection.OpenAsync();
+        }
+
+        try
+        {
+            await using var command = connection.CreateCommand();
+            command.CommandText = commandText;
+
+            return await command.ExecuteScalarAsync();
+        }
+        finally
+        {
+            if (shouldCloseConnection)
+            {
+                await connection.CloseAsync();
+            }
+        }
+    }
+
+    private static void AddParameter(DbCommand command, string name, object value)
+    {
+        var parameter = command.CreateParameter();
+        parameter.ParameterName = name;
+        parameter.Value = value;
+        command.Parameters.Add(parameter);
+    }
+
+    private static void AddSearchConditionParameters(DbCommand command, IReadOnlyList<string> searchConditions)
+    {
+        for (var index = 0; index < searchConditions.Count; index++)
+        {
+            AddParameter(command, $"@SearchCondition{index}", searchConditions[index]);
+        }
+    }
+
+    private static string DisplayValue(string? value)
+    {
+        return string.IsNullOrWhiteSpace(value) ? "Not available" : value;
+    }
+
+    private static string FormatDate(DateTime? value)
+    {
+        return value.HasValue ? value.Value.ToString("dd MMM yyyy", CultureInfo.InvariantCulture) : "Not available";
+    }
+
+    private static string FormatDateTime(DateTime value)
+    {
+        return value.ToLocalTime().ToString("g", CultureInfo.CurrentCulture);
+    }
+
+    private static string FormatContact(string? name, string? email, string? phone)
+    {
+        var parts = new[] { name, email, phone }
+            .Where(value => !string.IsNullOrWhiteSpace(value));
+
+        return parts.Any() ? string.Join(" | ", parts) : "Not available";
+    }
+
+    private static string ApplicationDescription(PlanningApplication application)
+    {
+        return DisplayValue(!string.IsNullOrWhiteSpace(application.Description) ? application.Description : application.Title);
+    }
+
+    private void ClampApplicationPage()
+    {
+        _applicationPage = Math.Clamp(_applicationPage, 1, ApplicationTotalPages);
+    }
+
+    private void ClampSearchPage()
+    {
+        _searchPage = Math.Clamp(_searchPage, 1, SearchTotalPages);
+    }
+
+    private static int GetPageSkip(int page, int pageSize)
+    {
+        return (Math.Max(1, page) - 1) * pageSize;
+    }
+
+    private static int GetTotalPages(int totalCount, int pageSize)
+    {
+        return Math.Max(1, (int)Math.Ceiling(totalCount / (double)pageSize));
+    }
+
+    private static string GetPaginationSummary(int totalCount, int currentPage, int pageSize, string itemName)
+    {
+        if (totalCount == 0)
+        {
+            return $"0 {itemName}(s)";
+        }
+
+        var start = GetPageSkip(currentPage, pageSize) + 1;
+        var end = Math.Min(totalCount, currentPage * pageSize);
+
+        return $"Showing {start}-{end} of {totalCount} {itemName}(s)";
+    }
+
+    private static string GetSearchResultKey(PlanningSearchResult result)
+    {
+        return result.PlanningApplicationId.ToString();
+    }
+
+    private static string? GetNullableString(DbDataReader reader, string name)
+    {
+        var ordinal = reader.GetOrdinal(name);
+        return reader.IsDBNull(ordinal) ? null : reader.GetString(ordinal);
+    }
+
+    private static Guid? GetNullableGuid(DbDataReader reader, string name)
+    {
+        var ordinal = reader.GetOrdinal(name);
+        return reader.IsDBNull(ordinal) ? null : reader.GetGuid(ordinal);
+    }
+
+    private static DateTime? GetNullableDateTime(DbDataReader reader, string name)
+    {
+        var ordinal = reader.GetOrdinal(name);
+        return reader.IsDBNull(ordinal) ? null : reader.GetDateTime(ordinal);
+    }
+
+    private static string PreviewText(string text)
+    {
+        const int maxLength = 4000;
+
+        return text.Length <= maxLength
+            ? text
+            : $"{text[..maxLength]}\n\n[Text truncated in UI preview]";
+    }
+
+    private List<FullTextSearchCriterion> GetRelevantDocumentCriteria()
+    {
+        return _lastSearchCriteria.Count > 0
+            ? _lastSearchCriteria
+            : BuildFullTextSearchCriteria(_searchCriteria);
+    }
+
+    private static List<RelevantDocumentMatch> BuildRelevantDocumentMatches(
+        IEnumerable<PlanningDocument> documents,
+        IReadOnlyList<FullTextSearchCriterion> criteria)
+    {
+        var matches = new List<RelevantDocumentMatch>();
+
+        foreach (var document in documents.OrderByDescending(document => document.PublishedDate).ThenBy(document => document.Name))
+        {
+            if (string.IsNullOrWhiteSpace(document.ContentText))
+            {
+                continue;
+            }
+
+            var documentWords = GetWordSpans(document.ContentText);
+            if (documentWords.Count == 0)
+            {
+                continue;
+            }
+
+            var matchingTerms = criteria
+                .Where(criterion => CriterionMatchesDocumentWords(criterion, documentWords))
+                .SelectMany(criterion => criterion.SearchTerms)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            if (matchingTerms.Count == 0)
+            {
+                continue;
+            }
+
+            var snippets = BuildRelevantDocumentSnippets(document.ContentText, documentWords, matchingTerms);
+            if (snippets.Count == 0)
+            {
+                continue;
+            }
+
+            matches.Add(new RelevantDocumentMatch
+            {
+                Document = document,
+                Snippets = snippets,
+                MatchCount = snippets.Sum(snippet => snippet.MatchCount)
+            });
+        }
+
+        return matches;
+    }
+
+    private static List<RelevantDocumentSnippet> BuildRelevantDocumentSnippets(
+        string contentText,
+        IReadOnlyList<TextWord> documentWords,
+        IReadOnlyList<string> searchTerms)
+    {
+        var matchWordIndexes = documentWords
+            .Select((word, index) => new { Word = word, Index = index })
+            .Where(item => searchTerms.Any(term => WordMatchesSearchTerm(item.Word.Text, term)))
+            .Select(item => item.Index)
+            .ToList();
+
+        if (matchWordIndexes.Count == 0)
+        {
+            return [];
+        }
+
+        var ranges = MergeWordRanges(matchWordIndexes
+            .Select(index => new WordRange
+            {
+                StartWordIndex = Math.Max(0, index - RelevantDocumentContextWordCount),
+                EndWordIndex = Math.Min(documentWords.Count - 1, index + RelevantDocumentContextWordCount)
+            })
+            .ToList());
+
+        return ranges
+            .Select(range =>
+            {
+                var firstWord = documentWords[range.StartWordIndex];
+                var lastWord = documentWords[range.EndWordIndex];
+                var snippetText = contentText[firstWord.Start..lastWord.End].Trim();
+                var highlightedHtml = HighlightSearchTerms(snippetText, searchTerms);
+
+                if (range.StartWordIndex > 0)
+                {
+                    highlightedHtml = "... " + highlightedHtml;
+                }
+
+                if (range.EndWordIndex < documentWords.Count - 1)
+                {
+                    highlightedHtml += " ...";
+                }
+
+                return new RelevantDocumentSnippet
+                {
+                    HighlightedHtml = highlightedHtml,
+                    MatchCount = CountMatchingWords(documentWords, range, searchTerms)
+                };
+            })
+            .ToList();
+    }
+
+    private static List<WordRange> MergeWordRanges(IReadOnlyList<WordRange> ranges)
+    {
+        if (ranges.Count <= 1)
+        {
+            return ranges.ToList();
+        }
+
+        var mergedRanges = new List<WordRange>();
+        var currentRange = ranges[0];
+
+        foreach (var range in ranges.Skip(1))
+        {
+            if (range.StartWordIndex <= currentRange.EndWordIndex + 1)
+            {
+                currentRange.EndWordIndex = Math.Max(currentRange.EndWordIndex, range.EndWordIndex);
+                continue;
+            }
+
+            mergedRanges.Add(currentRange);
+            currentRange = range;
+        }
+
+        mergedRanges.Add(currentRange);
+
+        return mergedRanges;
+    }
+
+    private static int CountMatchingWords(IReadOnlyList<TextWord> documentWords, WordRange range, IReadOnlyList<string> searchTerms)
+    {
+        var matchCount = 0;
+
+        for (var index = range.StartWordIndex; index <= range.EndWordIndex; index++)
+        {
+            if (searchTerms.Any(term => WordMatchesSearchTerm(documentWords[index].Text, term)))
+            {
+                matchCount++;
+            }
+        }
+
+        return matchCount;
+    }
+
+    private static List<TextWord> GetWordSpans(string text)
+    {
+        return KeywordRegex.Matches(text)
+            .Select(match => new TextWord
+            {
+                Text = match.Value,
+                Start = match.Index,
+                End = match.Index + match.Length
+            })
+            .ToList();
+    }
+
+    private static bool CriterionMatchesDocumentWords(FullTextSearchCriterion criterion, IReadOnlyList<TextWord> documentWords)
+    {
+        return criterion.SearchTerms.All(term => documentWords.Any(word => WordMatchesSearchTerm(word.Text, term)));
+    }
+
+    private static bool WordMatchesSearchTerm(string word, string searchTerm)
+    {
+        return word.StartsWith(searchTerm, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string HighlightSearchTerms(string text, IReadOnlyList<string> searchTerms)
+    {
+        var terms = searchTerms
+            .Where(term => !string.IsNullOrWhiteSpace(term))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderByDescending(term => term.Length)
+            .Select(Regex.Escape)
+            .ToList();
+
+        if (terms.Count == 0)
+        {
+            return System.Net.WebUtility.HtmlEncode(text);
+        }
+
+        var regex = new Regex($@"(?<![\p{{L}}\p{{Nd}}])(?:{string.Join("|", terms)})[\p{{L}}\p{{Nd}}]*", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        var highlightedText = new StringBuilder();
+        var previousIndex = 0;
+
+        foreach (Match match in regex.Matches(text))
+        {
+            highlightedText.Append(System.Net.WebUtility.HtmlEncode(text[previousIndex..match.Index]));
+            highlightedText.Append("<mark>");
+            highlightedText.Append(System.Net.WebUtility.HtmlEncode(match.Value));
+            highlightedText.Append("</mark>");
+            previousIndex = match.Index + match.Length;
+        }
+
+        highlightedText.Append(System.Net.WebUtility.HtmlEncode(text[previousIndex..]));
+
+        return highlightedText.ToString();
+    }
+
+    private static string FormatMatchCount(int matchCount)
+    {
+        return matchCount == 1 ? "1 match" : $"{matchCount} matches";
+    }
+
+    private static string GetSearchCriterionInputId(int index)
+    {
+        return $"planning-keyword-{index}";
+    }
+
+    private static string GetSearchCriterionLabel(int index)
+    {
+        return $"Keyword search criterion {index + 1}";
+    }
+
+    private static string GetSearchCriterionPlaceholder(int index)
+    {
+        return index == 0
+            ? "Search documents, headings, descriptions"
+            : "Additional keyword criteria";
+    }
+
+    private static List<FullTextSearchCriterion> BuildFullTextSearchCriteria(IEnumerable<SearchCriterionInput> criteria)
+    {
+        var searchCriteria = new List<FullTextSearchCriterion>();
+
+        foreach (var criterion in criteria)
+        {
+            var displayText = criterion.Text.Trim();
+            var searchTerms = ExtractSearchTerms(displayText);
+
+            if (searchTerms.Count > 0)
+            {
+                searchCriteria.Add(new FullTextSearchCriterion
+                {
+                    DisplayText = displayText,
+                    SearchCondition = BuildFullTextSearchCondition(searchTerms),
+                    SearchTerms = searchTerms
+                });
+            }
+        }
+
+        return searchCriteria;
+    }
+
+    private static string FormatSearchCriteriaSummary(IReadOnlyList<FullTextSearchCriterion> criteria)
+    {
+        return string.Join(" + ", criteria.Select(criterion => criterion.DisplayText));
+    }
+
+    private static List<string> ExtractSearchTerms(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return [];
+        }
+
+        return KeywordRegex.Matches(value)
+            .Select(match => match.Value)
+            .Where(term => term.Length > 1 && !IgnoredSearchTerms.Contains(term))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Take(10)
+            .Select(term => term.Length > 50 ? term[..50] : term)
+            .ToList();
+    }
+
+    private static string BuildFullTextSearchCondition(IEnumerable<string> searchTerms)
+    {
+        return string.Join(" AND ", searchTerms.Select(term => $"\"{term}*\""));
+    }
+
+    private sealed class SearchCriterionInput
+    {
+        public string Text { get; set; } = string.Empty;
+    }
+
+    private sealed class FullTextSearchCriterion
+    {
+        public string DisplayText { get; set; } = string.Empty;
+
+        public string SearchCondition { get; set; } = string.Empty;
+
+        public List<string> SearchTerms { get; set; } = [];
+    }
+
+    private sealed class RelevantDocumentMatch
+    {
+        public PlanningDocument Document { get; set; } = null!;
+
+        public List<RelevantDocumentSnippet> Snippets { get; set; } = [];
+
+        public int MatchCount { get; set; }
+    }
+
+    private sealed class RelevantDocumentCriterionFilter
+    {
+        public int Id { get; set; }
+
+        public FullTextSearchCriterion Criterion { get; set; } = null!;
+
+        public bool IsSelected { get; set; }
+    }
+
+    private sealed class RelevantDocumentSnippet
+    {
+        public string HighlightedHtml { get; set; } = string.Empty;
+
+        public int MatchCount { get; set; }
+    }
+
+    private sealed class TextWord
+    {
+        public string Text { get; set; } = string.Empty;
+
+        public int Start { get; set; }
+
+        public int End { get; set; }
+    }
+
+    private sealed class WordRange
+    {
+        public int StartWordIndex { get; set; }
+
+        public int EndWordIndex { get; set; }
+    }
+}

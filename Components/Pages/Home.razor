@@ -1,0 +1,36 @@
+@page "/"
+
+<PageTitle>Home</PageTitle>
+
+<section class="hero">
+    <p class="eyebrow">Starter app</p>
+    <h1>Basic Blazor Server setup with SQL Server</h1>
+    <p class="lead">
+        This project is wired for interactive server-side components, EF Core, and a SQL Server-backed
+        <code>ApplicationDbContext</code>.
+    </p>
+</section>
+
+<section class="card-grid">
+    <article class="card">
+        <h2>Database</h2>
+        <p>
+            Update the <code>DefaultConnection</code> string in <code>appsettings.json</code>, create a migration,
+            and apply it to your SQL Server instance.
+        </p>
+    </article>
+
+    <article class="card">
+        <h2>Sample data flow</h2>
+        <p>
+            The <a href="/todos">Todos</a> page loads, inserts, toggles, and deletes records through EF Core.
+        </p>
+    </article>
+    <article class="card">
+        <h2>Project shape</h2>
+        <p>
+            The UI lives under <code>Components</code> and the EF Core types live under <code>Data</code>.
+        </p>
+    </article>
+</section>
+
