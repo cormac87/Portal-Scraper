@@ -42,12 +42,25 @@
             {
                 var criterion = _searchCriteria[index];
                 <div class="planning-search-row" @key="criterion">
-                    <input id="@GetSearchCriterionInputId(index)"
-                           class="text-input"
-                           placeholder="@GetSearchCriterionPlaceholder(index)"
-                           aria-label="@GetSearchCriterionLabel(index)"
-                           @bind="criterion.Text"
-                           @bind:event="oninput" />
+                    <div class="planning-search-input">
+                        <input id="@GetSearchCriterionInputId(index)"
+                               class="text-input"
+                               placeholder="@GetSearchCriterionPlaceholder(index)"
+                               aria-label="@GetSearchCriterionLabel(index)"
+                               @bind="criterion.Text"
+                               @bind:event="oninput" />
+                        @if (index == 0)
+                        {
+                            <button class="icon-button search-settings-button"
+                                    type="button"
+                                    title="Search settings"
+                                    aria-label="Open criteria search settings"
+                                    aria-haspopup="dialog"
+                                    @onclick="OpenSearchSettingsModal">
+                                <span aria-hidden="true">&#9881;</span>
+                            </button>
+                        }
+                    </div>
                     @if (_searchCriteria.Count > 1)
                     {
                         <button class="secondary-button" type="button" @onclick="() => RemoveSearchCriterion(criterion)" disabled="@_isSearching">
@@ -80,6 +93,32 @@
         </p>
     }
 </section>
+
+@if (_isSearchSettingsModalOpen)
+{
+    <div class="modal-backdrop" @onclick="CloseSearchSettingsModal">
+        <section class="modal-panel search-settings-modal" role="dialog" aria-modal="true" aria-labelledby="search-settings-modal-title" @onclick:stopPropagation="true">
+            <header class="modal-header">
+                <div>
+                    <p class="planning-authority">Keyword search</p>
+                    <h2 id="search-settings-modal-title">Criteria settings</h2>
+                </div>
+                <button class="secondary-button" type="button" @onclick="CloseSearchSettingsModal">Close</button>
+            </header>
+
+            <div class="search-settings-options">
+                <label class="setting-checkbox">
+                    <input type="checkbox" @bind="_searchWordsMustBeAdjacent" />
+                    <span>Words must be next to each other in the document</span>
+                </label>
+            </div>
+
+            <footer class="modal-actions">
+                <button class="primary-button" type="button" @onclick="CloseSearchSettingsModal">Done</button>
+            </footer>
+        </section>
+    </div>
+}
 
 @if (!string.IsNullOrWhiteSpace(_errorMessage))
 {
@@ -510,6 +549,8 @@ SELECT CAST(
     private bool _isApplicationModalOpen;
     private bool _isDocumentsModalOpen;
     private bool _isRelevantDocumentsModalOpen;
+    private bool _isSearchSettingsModalOpen;
+    private bool _searchWordsMustBeAdjacent;
     private PlanningApplication? _selectedApplication;
     private Guid? _expandedDocumentId;
     private string? _errorMessage;
@@ -594,7 +635,7 @@ SELECT CAST(
 
     private async Task SearchAsync()
     {
-        var searchCriteria = BuildFullTextSearchCriteria(_searchCriteria);
+        var searchCriteria = BuildFullTextSearchCriteria(_searchCriteria, _searchWordsMustBeAdjacent);
         if (searchCriteria.Count == 0)
         {
             ClearSearch();
@@ -688,6 +729,16 @@ SELECT CAST(
         {
             _searchCriteria.Add(new SearchCriterionInput());
         }
+    }
+
+    private void OpenSearchSettingsModal()
+    {
+        _isSearchSettingsModalOpen = true;
+    }
+
+    private void CloseSearchSettingsModal()
+    {
+        _isSearchSettingsModalOpen = false;
     }
 
     private async Task PreviousApplicationPageAsync()
@@ -1258,7 +1309,7 @@ FROM [RankedApplications]");
     {
         return _lastSearchCriteria.Count > 0
             ? _lastSearchCriteria
-            : BuildFullTextSearchCriteria(_searchCriteria);
+            : BuildFullTextSearchCriteria(_searchCriteria, _searchWordsMustBeAdjacent);
     }
 
     private static List<RelevantDocumentMatch> BuildRelevantDocumentMatches(
@@ -1415,7 +1466,48 @@ FROM [RankedApplications]");
 
     private static bool CriterionMatchesDocumentWords(FullTextSearchCriterion criterion, IReadOnlyList<TextWord> documentWords)
     {
+        if (criterion.RequireAdjacentWords && criterion.SearchTerms.Count > 1)
+        {
+            return ContainsAdjacentSearchTerms(criterion.SearchTerms, documentWords);
+        }
+
         return criterion.SearchTerms.All(term => documentWords.Any(word => WordMatchesSearchTerm(word.Text, term)));
+    }
+
+    private static bool ContainsAdjacentSearchTerms(IReadOnlyList<string> searchTerms, IReadOnlyList<TextWord> documentWords)
+    {
+        if (searchTerms.Count == 0)
+        {
+            return false;
+        }
+
+        if (documentWords.Count < searchTerms.Count)
+        {
+            return false;
+        }
+
+        for (var startIndex = 0; startIndex <= documentWords.Count - searchTerms.Count; startIndex++)
+        {
+            var isMatch = true;
+
+            for (var termIndex = 0; termIndex < searchTerms.Count; termIndex++)
+            {
+                if (WordMatchesSearchTerm(documentWords[startIndex + termIndex].Text, searchTerms[termIndex]))
+                {
+                    continue;
+                }
+
+                isMatch = false;
+                break;
+            }
+
+            if (isMatch)
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static bool WordMatchesSearchTerm(string word, string searchTerm)
@@ -1477,7 +1569,7 @@ FROM [RankedApplications]");
             : "Additional keyword criteria";
     }
 
-    private static List<FullTextSearchCriterion> BuildFullTextSearchCriteria(IEnumerable<SearchCriterionInput> criteria)
+    private static List<FullTextSearchCriterion> BuildFullTextSearchCriteria(IEnumerable<SearchCriterionInput> criteria, bool requireAdjacentWords)
     {
         var searchCriteria = new List<FullTextSearchCriterion>();
 
@@ -1491,8 +1583,9 @@ FROM [RankedApplications]");
                 searchCriteria.Add(new FullTextSearchCriterion
                 {
                     DisplayText = displayText,
-                    SearchCondition = BuildFullTextSearchCondition(searchTerms),
-                    SearchTerms = searchTerms
+                    SearchCondition = BuildFullTextSearchCondition(searchTerms, requireAdjacentWords),
+                    SearchTerms = searchTerms,
+                    RequireAdjacentWords = requireAdjacentWords
                 });
             }
         }
@@ -1521,9 +1614,23 @@ FROM [RankedApplications]");
             .ToList();
     }
 
-    private static string BuildFullTextSearchCondition(IEnumerable<string> searchTerms)
+    private static string BuildFullTextSearchCondition(IReadOnlyList<string> searchTerms, bool requireAdjacentWords)
     {
-        return string.Join(" AND ", searchTerms.Select(term => $"\"{term}*\""));
+        var prefixTerms = searchTerms
+            .Select(FormatFullTextPrefixTerm)
+            .ToList();
+
+        if (requireAdjacentWords && searchTerms.Count > 1)
+        {
+            return $"NEAR(({string.Join(", ", prefixTerms)}), 0, TRUE)";
+        }
+
+        return string.Join(" AND ", prefixTerms);
+    }
+
+    private static string FormatFullTextPrefixTerm(string term)
+    {
+        return "\"" + term + "*\"";
     }
 
     private sealed class SearchCriterionInput
@@ -1538,6 +1645,8 @@ FROM [RankedApplications]");
         public string SearchCondition { get; set; } = string.Empty;
 
         public List<string> SearchTerms { get; set; } = [];
+
+        public bool RequireAdjacentWords { get; set; }
     }
 
     private sealed class RelevantDocumentMatch

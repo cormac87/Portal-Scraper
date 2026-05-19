@@ -181,7 +181,8 @@ code {
 
 .primary-button,
 .secondary-button,
-.danger-button {
+.danger-button,
+.icon-button {
     width: fit-content;
     border: 0;
     border-radius: 999px;
@@ -202,7 +203,8 @@ code {
 
 .primary-button:disabled,
 .secondary-button:disabled,
-.danger-button:disabled {
+.danger-button:disabled,
+.icon-button:disabled {
     cursor: not-allowed;
     opacity: 0.6;
 }
@@ -210,6 +212,22 @@ code {
 .secondary-button {
     background: rgba(13, 148, 136, 0.12);
     color: #0f766e;
+}
+
+.icon-button {
+    display: inline-flex;
+    flex: 0 0 auto;
+    align-items: center;
+    justify-content: center;
+    width: 2.9rem;
+    height: 2.9rem;
+    padding: 0;
+    background: rgba(13, 148, 136, 0.12);
+    color: #0f766e;
+}
+
+.icon-button:hover {
+    background: rgba(13, 148, 136, 0.18);
 }
 
 .danger-button {
@@ -325,7 +343,15 @@ code {
     align-items: center;
 }
 
+.planning-search-input {
+    display: flex;
+    width: min(44rem, 100%);
+    gap: 0.55rem;
+    align-items: center;
+}
+
 .planning-search-row .text-input {
+    min-width: 0;
     max-width: 40rem;
 }
 
@@ -557,6 +583,10 @@ code {
     width: min(72rem, 100%);
 }
 
+.search-settings-modal {
+    width: min(34rem, 100%);
+}
+
 .modal-header {
     display: flex;
     justify-content: space-between;
@@ -621,6 +651,33 @@ code {
 .modal-actions {
     border-top: 1px solid var(--border);
     padding-top: 1rem;
+}
+
+.search-settings-options {
+    display: grid;
+    gap: 0.75rem;
+}
+
+.setting-checkbox {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.65rem;
+    padding: 0.85rem;
+    border: 1px solid var(--border);
+    border-radius: 0.75rem;
+    background: rgba(248, 250, 252, 0.95);
+    color: #24344d;
+    font-weight: 600;
+}
+
+.setting-checkbox input {
+    flex: 0 0 auto;
+    margin-top: 0.25rem;
+    accent-color: var(--accent);
+}
+
+.setting-checkbox span {
+    overflow-wrap: anywhere;
 }
 
 .relevant-criteria-filter {
@@ -761,7 +818,9 @@ code {
         align-items: flex-start;
     }
 
+    .planning-search-input,
     .planning-search-row .text-input {
+        width: 100%;
         max-width: none;
     }
 
