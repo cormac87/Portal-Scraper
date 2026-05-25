@@ -28,3 +28,26 @@ GO
 CREATE UNIQUE NONCLUSTERED INDEX [UX_PlanningApplication_Authority_Reference]
     ON [dbo].[PlanningApplication] ([PlanningAuthorityId], [ApplicationReference])
     WHERE [ApplicationReference] IS NOT NULL;
+
+GO
+
+CREATE NONCLUSTERED INDEX [IX_PlanningApplication_Authority_SourceKey]
+    ON [dbo].[PlanningApplication] ([PlanningAuthorityId], [SourceKey])
+    WHERE [SourceKey] IS NOT NULL;
+
+GO
+
+CREATE NONCLUSTERED INDEX [IX_PlanningApplication_Authority_ValidatedDate]
+    ON [dbo].[PlanningApplication] ([PlanningAuthorityId], [ValidatedDate])
+    WHERE [ValidatedDate] IS NOT NULL;
+
+GO
+
+CREATE NONCLUSTERED INDEX [IX_PlanningApplication_Authority_ReceivedDate]
+    ON [dbo].[PlanningApplication] ([PlanningAuthorityId], [ReceivedDate])
+    WHERE [ReceivedDate] IS NOT NULL;
+
+GO
+
+CREATE NONCLUSTERED INDEX [IX_PlanningApplication_ScrapedAt_Reference_Id]
+    ON [dbo].[PlanningApplication] ([ScrapedAt] DESC, [ApplicationReference] ASC, [Id] ASC);

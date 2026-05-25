@@ -1,3 +1,11 @@
+SET ANSI_NULLS ON;
+SET ANSI_PADDING ON;
+SET ANSI_WARNINGS ON;
+SET ARITHABORT ON;
+SET CONCAT_NULL_YIELDS_NULL ON;
+SET QUOTED_IDENTIFIER ON;
+SET NUMERIC_ROUNDABORT OFF;
+
 IF COL_LENGTH('dbo.PlanningApplication', 'ReceivedDate') IS NULL
 BEGIN
     ALTER TABLE [dbo].[PlanningApplication]
@@ -104,12 +112,82 @@ END;
 IF NOT EXISTS (
     SELECT 1
     FROM sys.indexes
+    WHERE name = 'IX_PlanningApplication_Authority_SourceKey'
+        AND object_id = OBJECT_ID('dbo.PlanningApplication')
+)
+BEGIN
+    CREATE NONCLUSTERED INDEX [IX_PlanningApplication_Authority_SourceKey]
+        ON [dbo].[PlanningApplication] ([PlanningAuthorityId], [SourceKey])
+        WHERE [SourceKey] IS NOT NULL;
+END;
+
+IF NOT EXISTS (
+    SELECT 1
+    FROM sys.indexes
     WHERE name = 'UX_PlanningDocument_Application_Url'
         AND object_id = OBJECT_ID('dbo.PlanningDocument')
 )
 BEGIN
     CREATE UNIQUE NONCLUSTERED INDEX [UX_PlanningDocument_Application_Url]
         ON [dbo].[PlanningDocument] ([PlanningApplicationId], [Url]);
+END;
+
+IF NOT EXISTS (
+    SELECT 1
+    FROM sys.indexes
+    WHERE name = 'IX_PlanningApplication_Authority_ValidatedDate'
+        AND object_id = OBJECT_ID('dbo.PlanningApplication')
+)
+BEGIN
+    CREATE NONCLUSTERED INDEX [IX_PlanningApplication_Authority_ValidatedDate]
+        ON [dbo].[PlanningApplication] ([PlanningAuthorityId], [ValidatedDate])
+        WHERE [ValidatedDate] IS NOT NULL;
+END;
+
+IF NOT EXISTS (
+    SELECT 1
+    FROM sys.indexes
+    WHERE name = 'IX_PlanningApplication_Authority_ReceivedDate'
+        AND object_id = OBJECT_ID('dbo.PlanningApplication')
+)
+BEGIN
+    CREATE NONCLUSTERED INDEX [IX_PlanningApplication_Authority_ReceivedDate]
+        ON [dbo].[PlanningApplication] ([PlanningAuthorityId], [ReceivedDate])
+        WHERE [ReceivedDate] IS NOT NULL;
+END;
+
+IF NOT EXISTS (
+    SELECT 1
+    FROM sys.indexes
+    WHERE name = 'IX_PlanningApplication_ScrapedAt_Reference_Id'
+        AND object_id = OBJECT_ID('dbo.PlanningApplication')
+)
+BEGIN
+    CREATE NONCLUSTERED INDEX [IX_PlanningApplication_ScrapedAt_Reference_Id]
+        ON [dbo].[PlanningApplication] ([ScrapedAt] DESC, [ApplicationReference] ASC, [Id] ASC);
+END;
+
+IF NOT EXISTS (
+    SELECT 1
+    FROM sys.indexes
+    WHERE name = 'IX_PlanningDocument_Application_PublishedDate'
+        AND object_id = OBJECT_ID('dbo.PlanningDocument')
+)
+BEGIN
+    CREATE NONCLUSTERED INDEX [IX_PlanningDocument_Application_PublishedDate]
+        ON [dbo].[PlanningDocument] ([PlanningApplicationId], [PublishedDate])
+        WHERE [PublishedDate] IS NOT NULL;
+END;
+
+IF NOT EXISTS (
+    SELECT 1
+    FROM sys.indexes
+    WHERE name = 'IX_PlanningAuthority_Name'
+        AND object_id = OBJECT_ID('dbo.PlanningAuthority')
+)
+BEGIN
+    CREATE NONCLUSTERED INDEX [IX_PlanningAuthority_Name]
+        ON [dbo].[PlanningAuthority] ([Name]);
 END;
 
 IF FULLTEXTSERVICEPROPERTY('IsFullTextInstalled') = 1

@@ -1,0 +1,70 @@
+@using PortalScraper.Data
+
+@if (IsSearching)
+{
+    <section class="empty-state">
+        <h2>Searching planning data</h2>
+        <p>Checking indexed application and document text.</p>
+    </section>
+}
+else if (Results.Count == 0)
+{
+    <section class="empty-state">
+        <h2>No keyword matches</h2>
+        <p>Try a different keyword or phrase.</p>
+    </section>
+}
+else
+{
+    <PaginationControls Summary="@Summary"
+                        CurrentPage="@CurrentPage"
+                        TotalPages="@TotalPages"
+                        IsBusy="@IsSearching"
+                        OnPrevious="OnPrevious"
+                        OnNext="OnNext" />
+
+    <section class="search-results">
+        @foreach (var result in Results)
+        {
+            <PlanningApplicationCard @key="result.PlanningApplicationId"
+                                     ApplicationId="@result.PlanningApplicationId"
+                                     AuthorityName="@result.PlanningAuthorityName"
+                                     ApplicationReference="@result.ApplicationReference"
+                                     Title="@result.ApplicationTitle"
+                                     OnOpen="OnOpenApplication" />
+        }
+    </section>
+
+    <PaginationControls Summary="@Summary"
+                        CurrentPage="@CurrentPage"
+                        TotalPages="@TotalPages"
+                        IsBusy="@IsSearching"
+                        OnPrevious="OnPrevious"
+                        OnNext="OnNext" />
+}
+
+@code {
+    [Parameter]
+    public IReadOnlyList<PlanningSearchResult> Results { get; set; } = [];
+
+    [Parameter]
+    public string Summary { get; set; } = string.Empty;
+
+    [Parameter]
+    public int CurrentPage { get; set; } = 1;
+
+    [Parameter]
+    public int TotalPages { get; set; } = 1;
+
+    [Parameter]
+    public bool IsSearching { get; set; }
+
+    [Parameter]
+    public EventCallback OnPrevious { get; set; }
+
+    [Parameter]
+    public EventCallback OnNext { get; set; }
+
+    [Parameter]
+    public EventCallback<Guid> OnOpenApplication { get; set; }
+}

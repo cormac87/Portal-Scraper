@@ -4,6 +4,7 @@ using PortalScraper.Data;
 using PortalScraper.Services;
 using PortalScraper.Services.Documents;
 using PortalScraper.Services.Export;
+using PortalScraper.Services.Planning;
 
 System.Text.Encoding.RegisterProvider(System.Text.CodePagesEncodingProvider.Instance);
 
@@ -16,7 +17,12 @@ builder.Services.AddRazorComponents()
 
 builder.Services.AddDbContextFactory<ApplicationDbContext>(options =>
     options.UseSqlServer(connectionString));
+builder.Services.Configure<PlanningPortalScraperOptions>(
+    builder.Configuration.GetSection(PlanningPortalScraperOptions.SectionName));
 builder.Services.AddScoped<IPlanningPortalScraper, PlanningPortalScraper>();
+builder.Services.AddScoped<IPlanningDataService, PlanningDataService>();
+builder.Services.AddScoped<IPlanningSearchService, PlanningSearchService>();
+builder.Services.AddScoped<IRelevantPlanningDocumentService, RelevantPlanningDocumentService>();
 builder.Services.AddScoped<IPlanningApplicationExcelExportService, PlanningApplicationExcelExportService>();
 builder.Services.AddScoped<IPlanningDocumentContentService, PlanningDocumentContentService>();
 builder.Services.AddSingleton<PlanningDocumentTextExtractor, PdfPlanningDocumentTextExtractor>();

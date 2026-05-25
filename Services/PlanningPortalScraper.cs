@@ -1,9 +1,11 @@
 using System.Globalization;
 using System.Net;
 using System.Diagnostics;
+using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 using Microsoft.Playwright;
 using PortalScraper.Data;
 using PortalScraper.Services.Documents;
@@ -28,6 +30,8 @@ public sealed record WeeklyScrapeResult(
 public sealed class PlanningPortalScraper(
     IDbContextFactory<ApplicationDbContext> dbFactory,
     IPlanningDocumentContentService documentContentService,
+    IHostEnvironment hostEnvironment,
+    IOptions<PlanningPortalScraperOptions> scraperOptions,
     ILogger<PlanningPortalScraper> logger) : IPlanningPortalScraper
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
@@ -43,8 +47,19 @@ public sealed class PlanningPortalScraper(
         var documentsScraped = 0;
         var documentsSaved = 0;
         var authoritiesProcessed = 0;
+        var fileLog = ScraperFileLogger.Create(
+            hostEnvironment.ContentRootPath,
+            scraperOptions.Value.LogDirectory,
+            startedAt,
+            logger);
 
         logger.LogInformation("Starting weekly planning import scrape at {StartedAtUtc}", startedAt);
+        fileLog.WriteRunSummary($"Starting weekly planning import scrape at {FormatUtc(startedAt)}");
+        if (fileLog.Enabled)
+        {
+            logger.LogInformation("Writing scraper text logs to {ScraperLogDirectory}", fileLog.RootDirectory);
+            fileLog.WriteRunSummary($"Writing scraper text logs to {fileLog.RootDirectory}");
+        }
 
         await using var db = await dbFactory.CreateDbContextAsync(cancellationToken);
         var authorities = await db.PlanningAuthorities
@@ -58,6 +73,7 @@ public sealed class PlanningPortalScraper(
         if (authorities.Count == 0)
         {
             logger.LogInformation("Weekly planning import scrape finished without work because no authorities have website URLs");
+            fileLog.WriteRunSummary("Weekly planning import scrape finished without work because no authorities have website URLs.");
             messages.Add("No planning authorities with website URLs were found.");
 
             return new WeeklyScrapeResult(
@@ -71,17 +87,21 @@ public sealed class PlanningPortalScraper(
                 messages);
         }
 
-        using var playwright = await Playwright.CreateAsync();
-        await using var browser = await playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions
-        {
-            Headless = true
-        });
-        logger.LogDebug("Launched headless Chromium for weekly planning import scrape");
+        var browserFailureRetryCount = Math.Max(0, scraperOptions.Value.BrowserFailureRetryCount);
+        var browserRestartDelay = TimeSpan.FromMilliseconds(Math.Max(0, scraperOptions.Value.BrowserRestartDelayMilliseconds));
+        await using var browserSession = await StartBrowserSessionWithRetryAsync(
+            fileLog,
+            browserFailureRetryCount,
+            browserRestartDelay,
+            cancellationToken);
 
         foreach (var authority in authorities)
         {
             cancellationToken.ThrowIfCancellationRequested();
             var authorityTimer = Stopwatch.StartNew();
+            var authorityStartedAt = DateTime.UtcNow;
+            var authorityLog = fileLog.CreateAuthorityLog(authority);
+            authorityLog.StartRun(authority, authorityStartedAt);
 
             try
             {
@@ -90,8 +110,16 @@ public sealed class PlanningPortalScraper(
                     authority.Name,
                     authority.Id,
                     authority.Website);
+                authorityLog.WriteSummary("Starting weekly planning scrape.");
 
-                var authorityScrapeResult = await ScrapeAuthorityAsync(browser, authority, messages, cancellationToken);
+                var authorityScrapeResult = await ScrapeAuthorityWithBrowserRecoveryAsync(
+                    browserSession,
+                    authority,
+                    authorityLog,
+                    messages,
+                    browserFailureRetryCount,
+                    browserRestartDelay,
+                    cancellationToken);
                 authoritiesProcessed++;
                 var scrapedApplications = authorityScrapeResult.Applications;
                 applicationsScraped += scrapedApplications.Count;
@@ -101,8 +129,9 @@ public sealed class PlanningPortalScraper(
                 if (authorityScrapeResult.Skipped)
                 {
                     logger.LogInformation(
-                        "Skipped {PlanningAuthorityName} because documents already exist for the selected weekly list",
+                        "Skipped {PlanningAuthorityName} because the selected weekly list returned no new applications to scrape",
                         authority.Name);
+                    authorityLog.WriteSummary($"Skipped after {authorityTimer.ElapsedMilliseconds} ms because the selected weekly list returned no new applications to scrape.");
                     continue;
                 }
 
@@ -111,10 +140,12 @@ public sealed class PlanningPortalScraper(
                     scrapedApplications.Count,
                     authorityDocumentsScraped,
                     authority.Name);
+                authorityLog.WriteSummary($"Scraped {scrapedApplications.Count} applications and {authorityDocumentsScraped} documents; importing to database.");
 
                 var saveResult = await SaveApplicationsAsync(authority.Id, scrapedApplications, cancellationToken);
                 applicationsSaved += saveResult.ApplicationsSaved;
                 documentsSaved += saveResult.DocumentsSaved;
+                authorityLog.WriteSummary($"Database import finished: applications saved={saveResult.ApplicationsSaved}, documents saved={saveResult.DocumentsSaved}.");
 
                 logger.LogInformation(
                     "Finished {PlanningAuthorityName}: imported {ApplicationsSaved} applications and {DocumentsSaved} new documents in {ElapsedMilliseconds} ms",
@@ -122,6 +153,7 @@ public sealed class PlanningPortalScraper(
                     saveResult.ApplicationsSaved,
                     saveResult.DocumentsSaved,
                     authorityTimer.ElapsedMilliseconds);
+                authorityLog.WriteSummary($"Finished authority scrape in {authorityTimer.ElapsedMilliseconds} ms.");
 
                 messages.Add(
                     $"{authority.Name}: scraped {scrapedApplications.Count} applications and {authorityDocumentsScraped} documents.");
@@ -134,6 +166,8 @@ public sealed class PlanningPortalScraper(
                     authority.Name,
                     authority.Id,
                     authorityTimer.ElapsedMilliseconds);
+                authorityLog.WriteSummary($"FAILED after {authorityTimer.ElapsedMilliseconds} ms: {ex.GetType().Name}: {ex.Message}");
+                authorityLog.WriteExceptionSummary(ex);
                 messages.Add($"{authority.Name}: scrape failed - {ex.Message}");
             }
         }
@@ -147,6 +181,8 @@ public sealed class PlanningPortalScraper(
             applicationsSaved,
             documentsScraped,
             documentsSaved);
+        fileLog.WriteRunSummary(
+            $"Finished weekly planning import scrape in {scrapeTimer.ElapsedMilliseconds} ms. Authorities={authoritiesProcessed}, ApplicationsScraped={applicationsScraped}, ApplicationsSaved={applicationsSaved}, DocumentsScraped={documentsScraped}, DocumentsSaved={documentsSaved}");
 
         return new WeeklyScrapeResult(
             authoritiesProcessed,
@@ -159,75 +195,176 @@ public sealed class PlanningPortalScraper(
             messages);
     }
 
+    private async Task<BrowserSession> StartBrowserSessionWithRetryAsync(
+        ScraperFileLogger fileLog,
+        int retryCount,
+        TimeSpan restartDelay,
+        CancellationToken cancellationToken)
+    {
+        var browserSession = new BrowserSession(logger);
+
+        for (var attempt = 0; ; attempt++)
+        {
+            try
+            {
+                await browserSession.StartAsync();
+                fileLog.WriteRunSummary("Launched headless Chromium for weekly planning import scrape.");
+
+                return browserSession;
+            }
+            catch (Exception ex) when (IsRestartableBrowserFailure(ex) && attempt < retryCount)
+            {
+                await browserSession.DisposeAsync();
+
+                logger.LogWarning(
+                    ex,
+                    "Failed to launch Playwright/Chromium. Waiting {RestartDelaySeconds} seconds before retry {RetryAttempt}/{RetryCount}",
+                    restartDelay.TotalSeconds,
+                    attempt + 1,
+                    retryCount);
+                fileLog.WriteRunSummary(
+                    $"Failed to launch Playwright/Chromium ({ex.GetType().Name}: {ex.Message}). Waiting {restartDelay.TotalSeconds:N0} seconds before retry {attempt + 1}/{retryCount}.");
+
+                await Task.Delay(restartDelay, cancellationToken);
+            }
+            catch
+            {
+                await browserSession.DisposeAsync();
+                throw;
+            }
+        }
+    }
+
+    private async Task<AuthorityScrapeResult> ScrapeAuthorityWithBrowserRecoveryAsync(
+        BrowserSession browserSession,
+        PlanningAuthority authority,
+        AuthorityFileLog authorityLog,
+        List<string> messages,
+        int retryCount,
+        TimeSpan restartDelay,
+        CancellationToken cancellationToken)
+    {
+        for (var attempt = 0; ; attempt++)
+        {
+            try
+            {
+                return await ScrapeAuthorityAsync(browserSession.Browser, authority, authorityLog, messages, cancellationToken);
+            }
+            catch (Exception ex) when (IsRestartableBrowserFailure(ex) && attempt < retryCount)
+            {
+                logger.LogWarning(
+                    ex,
+                    "Playwright/Chromium failed while scraping {PlanningAuthorityName}. Restarting browser and retrying authority after {RestartDelaySeconds} seconds ({RetryAttempt}/{RetryCount})",
+                    authority.Name,
+                    restartDelay.TotalSeconds,
+                    attempt + 1,
+                    retryCount);
+                authorityLog.WriteSummary(
+                    $"Playwright/Chromium failed ({ex.GetType().Name}: {ex.Message}). Stopping browser, waiting {restartDelay.TotalSeconds:N0} seconds, then retrying authority ({attempt + 1}/{retryCount}).");
+                messages.Add(
+                    $"{authority.Name}: browser failed; restarting Playwright/Chromium and retrying after {restartDelay.TotalSeconds:N0} seconds.");
+
+                await browserSession.RestartAsync(restartDelay, cancellationToken);
+            }
+        }
+    }
+
     private async Task<AuthorityScrapeResult> ScrapeAuthorityAsync(
         IBrowser browser,
         PlanningAuthority authority,
+        AuthorityFileLog authorityLog,
         List<string> messages,
         CancellationToken cancellationToken)
     {
         var baseUri = NormalizeBaseUri(authority.Website!);
         var applications = new List<ScrapedApplication>();
+        authorityLog.WriteSummary($"Base URI: {baseUri}");
 
         logger.LogDebug("Opening browser context for {PlanningAuthorityName} using base URI {BaseUri}", authority.Name, baseUri);
+        authorityLog.WriteSummary("Opening browser context.");
         await using var context = await browser.NewContextAsync(new BrowserNewContextOptions
         {
             IgnoreHTTPSErrors = true
         });
 
         var page = await context.NewPageAsync();
-        page.SetDefaultTimeout(30_000);
-        page.SetDefaultNavigationTimeout(60_000);
+        page.SetDefaultTimeout(scraperOptions.Value.DefaultTimeoutMilliseconds);
+        page.SetDefaultNavigationTimeout(scraperOptions.Value.DefaultNavigationTimeoutMilliseconds);
 
         logger.LogDebug("Navigating to planning authority homepage {BaseUri}", baseUri);
+        authorityLog.WriteSummary($"Navigating to homepage: {baseUri}");
         await page.GotoAsync(baseUri.ToString(), new PageGotoOptions
         {
             WaitUntil = WaitUntilState.DOMContentLoaded
         });
+        authorityLog.WriteSummary($"Homepage loaded: {page.Url}");
 
         logger.LogDebug("Opening weekly list for {PlanningAuthorityName}", authority.Name);
+        authorityLog.WriteSummary("Opening weekly list.");
         await OpenWeeklyListAsync(page, baseUri);
+        authorityLog.WriteSummary($"Weekly list page loaded: {page.Url}");
 
-        if (await ShouldSkipLoadedWeekAsync(page, authority, messages, cancellationToken))
+        var selectedWeek = await TryGetSelectedWeekAsync(page);
+        if (selectedWeek is null)
         {
-            return new AuthorityScrapeResult(applications, Skipped: true);
+            authorityLog.WriteSummary("Selected weekly list could not be read from the page.");
+        }
+        else
+        {
+            authorityLog.WriteSummary(
+                $"Selected weekly list: {selectedWeek.Label} (value={selectedWeek.Value}, week start={selectedWeek.WeekStart:yyyy-MM-dd}).");
         }
 
         logger.LogDebug("Submitting weekly list search for {PlanningAuthorityName}", authority.Name);
+        authorityLog.WriteSummary("Submitting weekly list search.");
         await SubmitWeeklySearchAsync(page);
-        await TrySetResultsPerPageToMaximumAsync(page);
+        authorityLog.WriteSummary($"Weekly list search submitted; results page: {page.Url}");
+        await TrySetResultsPerPageToMaximumAsync(page, logger, authority, authorityLog);
 
-        var resultLinks = await CollectResultLinksAsync(page, baseUri, cancellationToken);
+        var resultLinks = await CollectResultLinksAsync(page, baseUri, logger, authority, authorityLog, cancellationToken);
+
+        var filterResult = await FilterPreviouslyScrapedApplicationsAsync(resultLinks, authority, cancellationToken);
+        if (filterResult.SkippedApplications.Count > 0)
+        {
+            authorityLog.WriteSummary($"Skipped {filterResult.SkippedLinkCount} weekly result links that already exist in the database.");
+            foreach (var skippedApplication in filterResult.SkippedApplications)
+            {
+                authorityLog.WriteSummary($"Previously scraped: {skippedApplication}");
+            }
+        }
+
         logger.LogInformation(
             "Collected {ResultCount} weekly planning result links for {PlanningAuthorityName}",
             resultLinks.Count,
             authority.Name);
+        authorityLog.WriteSummary($"Collected {resultLinks.Count} weekly planning result links to scrape after filtering.");
 
-        if (resultLinks.Count == 0 && await TrySelectPreviousWeekAsync(page, baseUri))
+        for (var index = 0; index < resultLinks.Count; index++)
+        {
+            var resultLink = resultLinks[index];
+            authorityLog.WriteSummary(
+                $"Result {index + 1}/{resultLinks.Count}: {DescribeSearchResult(resultLink)}");
+        }
+
+        if (resultLinks.Count == 0)
         {
             logger.LogInformation(
-                "{PlanningAuthorityName}: default weekly list returned no applications; retrying the previous listed week",
+                "{PlanningAuthorityName}: default weekly list returned no new applications", // TODO log the week when the week is not always just the latest
                 authority.Name);
-            messages.Add($"{authority.Name}: default weekly list returned no applications, retried the previous listed week.");
+            authorityLog.WriteSummary("Default weekly list returned no new applications.");
+            messages.Add($"{authority.Name}: default weekly list returned no new applications");
 
-            if (await ShouldSkipLoadedWeekAsync(page, authority, messages, cancellationToken))
-            {
-                return new AuthorityScrapeResult(applications, Skipped: true);
-            }
-
-            await SubmitWeeklySearchAsync(page);
-            await TrySetResultsPerPageToMaximumAsync(page);
-
-            resultLinks = await CollectResultLinksAsync(page, baseUri, cancellationToken);
-            logger.LogInformation(
-                "Collected {ResultCount} previous-week planning result links for {PlanningAuthorityName}",
-                resultLinks.Count,
-                authority.Name);
+            return new AuthorityScrapeResult(applications, Skipped: true);
         }
 
         for (var index = 0; index < resultLinks.Count; index++)
         {
             cancellationToken.ThrowIfCancellationRequested();
             var resultLink = resultLinks[index];
+            var applicationTimer = Stopwatch.StartNew();
+            var applicationLog = authorityLog.CreateApplicationLog(resultLink, index + 1, resultLinks.Count);
+            authorityLog.WriteSummary(
+                $"Application {index + 1}/{resultLinks.Count} started: {DescribeSearchResult(resultLink)}. Detail log: {applicationLog.FileName}");
 
             try
             {
@@ -238,10 +375,35 @@ public sealed class PlanningPortalScraper(
                     authority.Name,
                     resultLink.Url);
 
-                applications.Add(await ScrapeApplicationAsync(page, baseUri, resultLink, cancellationToken));
+                var application = await ScrapeApplicationAsync(page, baseUri, resultLink, applicationLog, cancellationToken);
+                applications.Add(application);
+                applicationTimer.Stop();
+                applicationLog.WriteSection("Finished");
+                applicationLog.WriteLine($"Status: succeeded in {applicationTimer.ElapsedMilliseconds} ms.");
+                authorityLog.WriteSummary(
+                    $"Application {index + 1}/{resultLinks.Count} succeeded in {applicationTimer.ElapsedMilliseconds} ms: {DescribeScrapedApplication(application)}. Documents={application.Documents.Count}. Detail log: {applicationLog.FileName}");
+            }
+            catch (Exception ex)
+                when (IsRestartableBrowserFailure(ex))
+            {
+                applicationTimer.Stop();
+                applicationLog.WriteSection("Browser Failure");
+                applicationLog.WriteLine($"Status: browser failed in {applicationTimer.ElapsedMilliseconds} ms.");
+                applicationLog.WriteException(ex);
+                authorityLog.WriteSummary(
+                    $"Application {index + 1}/{resultLinks.Count} stopped because Playwright/Chromium failed in {applicationTimer.ElapsedMilliseconds} ms: {DescribeSearchResult(resultLink)}. Error={ex.GetType().Name}: {ex.Message}. Detail log: {applicationLog.FileName}");
+
+                throw;
             }
             catch (Exception ex)
             {
+                applicationTimer.Stop();
+                applicationLog.WriteSection("Failed");
+                applicationLog.WriteLine($"Status: failed in {applicationTimer.ElapsedMilliseconds} ms.");
+                applicationLog.WriteLine($"Page at failure: {page.Url}");
+                applicationLog.WriteException(ex);
+                authorityLog.WriteSummary(
+                    $"Application {index + 1}/{resultLinks.Count} FAILED in {applicationTimer.ElapsedMilliseconds} ms: {DescribeSearchResult(resultLink)}. Page at failure: {page.Url}. Error={ex.GetType().Name}: {ex.Message}. Detail log: {applicationLog.FileName}");
                 logger.LogWarning(
                     ex,
                     "{PlanningAuthorityName}: failed to scrape planning application {ApplicationUrl}",
@@ -254,62 +416,113 @@ public sealed class PlanningPortalScraper(
         return new AuthorityScrapeResult(applications, Skipped: false);
     }
 
-    private async Task<bool> ShouldSkipLoadedWeekAsync(
-        IPage page,
+    private async Task<PreviouslyScrapedFilterResult> FilterPreviouslyScrapedApplicationsAsync(
+        List<SearchResultDto> resultLinks,
         PlanningAuthority authority,
-        List<string> messages,
         CancellationToken cancellationToken)
     {
-        var week = await TryGetSelectedWeekAsync(page);
-        if (week is null)
+        var sourceKeys = resultLinks
+            .Select(result => ExtractQueryValue(result.Url, "keyVal"))
+            .Where(key => !string.IsNullOrWhiteSpace(key))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var applicationReferences = resultLinks
+            .Select(result => ExtractReferenceFromMeta(result.Meta))
+            .Where(reference => !string.IsNullOrWhiteSpace(reference))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        if (sourceKeys.Count == 0 && applicationReferences.Count == 0)
         {
-            logger.LogDebug(
-                "{PlanningAuthorityName}: could not identify the selected weekly-list date; scraping will continue",
-                authority.Name);
-            return false;
+            return PreviouslyScrapedFilterResult.Empty;
         }
 
-        if (!await HasPlanningDataForWeekAsync(authority.Id, week.WeekStart, cancellationToken))
+        await using var db = await dbFactory.CreateDbContextAsync(cancellationToken);
+        var previouslyScrapedQuery = db.PlanningApplications
+            .AsNoTracking()
+            .Where(application => application.PlanningAuthorityId == authority.Id);
+
+        if (sourceKeys.Count > 0 && applicationReferences.Count > 0)
         {
-            return false;
+            previouslyScrapedQuery = previouslyScrapedQuery.Where(application =>
+                (application.SourceKey != null && sourceKeys.Contains(application.SourceKey))
+                || (application.ApplicationReference != null && applicationReferences.Contains(application.ApplicationReference)));
         }
+        else if (sourceKeys.Count > 0)
+        {
+            previouslyScrapedQuery = previouslyScrapedQuery.Where(application =>
+                application.SourceKey != null && sourceKeys.Contains(application.SourceKey));
+        }
+        else
+        {
+            previouslyScrapedQuery = previouslyScrapedQuery.Where(application =>
+                application.ApplicationReference != null && applicationReferences.Contains(application.ApplicationReference));
+        }
+
+        var previouslyScrapedApplications = await previouslyScrapedQuery
+            .Select(application => new
+            {
+                application.SourceKey,
+                application.ApplicationReference,
+                application.Title,
+                DocumentCount = application.PlanningDocuments.Count
+            })
+            .ToListAsync(cancellationToken);
+
+        if (previouslyScrapedApplications.Count == 0)
+        {
+            return PreviouslyScrapedFilterResult.Empty;
+        }
+
+        var previouslyScrapedSourceKeys = previouslyScrapedApplications
+            .Select(application => application.SourceKey)
+            .Where(key => !string.IsNullOrWhiteSpace(key))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var previouslyScrapedApplicationReferences = previouslyScrapedApplications
+            .Select(application => application.ApplicationReference)
+            .Where(reference => !string.IsNullOrWhiteSpace(reference))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        var removedCount = resultLinks.RemoveAll(result =>
+        {
+            var sourceKey = ExtractQueryValue(result.Url, "keyVal");
+            var applicationReference = ExtractReferenceFromMeta(result.Meta);
+
+            return (!string.IsNullOrWhiteSpace(sourceKey)
+                    && previouslyScrapedSourceKeys.Contains(sourceKey))
+                || (!string.IsNullOrWhiteSpace(applicationReference)
+                    && previouslyScrapedApplicationReferences.Contains(applicationReference));
+        });
+
+        var skippedApplications = previouslyScrapedApplications
+            .OrderBy(application => application.ApplicationReference ?? application.SourceKey)
+            .Select(application =>
+            {
+                var identifiers = new List<string>();
+                if (!string.IsNullOrWhiteSpace(application.ApplicationReference))
+                {
+                    identifiers.Add($"reference={application.ApplicationReference}");
+                }
+
+                if (!string.IsNullOrWhiteSpace(application.SourceKey))
+                {
+                    identifiers.Add($"sourceKey={application.SourceKey}");
+                }
+
+                identifiers.Add($"{application.DocumentCount} documents");
+
+                return $"{FirstNonEmpty(application.ApplicationReference, application.Title, application.SourceKey)} ({string.Join(", ", identifiers)})";
+            })
+            .ToList();
 
         logger.LogInformation(
-            "{PlanningAuthorityName}: skipping week beginning {WeekStart:yyyy-MM-dd}; planning data is already loaded",
+            "{PlanningAuthorityName}: skipped {SkippedLinkCount} weekly result links for {PreviouslyScrapedApplicationCount} existing planning applications: {PreviouslyScrapedApplications}",
             authority.Name,
-            week.WeekStart);
-        messages.Add($"{authority.Name}: skipped week beginning {week.WeekStart:dd MMM yyyy}; planning data already loaded.");
+            removedCount,
+            previouslyScrapedApplications.Count,
+            string.Join("; ", skippedApplications));
 
-        return true;
+        return new PreviouslyScrapedFilterResult(removedCount, skippedApplications);
     }
 
-    private async Task<bool> HasPlanningDataForWeekAsync(
-        Guid authorityId,
-        DateTime weekStart,
-        CancellationToken cancellationToken)
-    {
-        await using var db = await dbFactory.CreateDbContextAsync(cancellationToken);
-        var weekEnd = weekStart.AddDays(7);
-
-        var hasDocumentsForWeek = await db.PlanningDocuments
-            .AnyAsync(
-                document => document.PublishedDate >= weekStart
-                    && document.PublishedDate < weekEnd
-                    && document.PlanningApplication.PlanningAuthorityId == authorityId,
-                cancellationToken);
-
-        if (hasDocumentsForWeek)
-        {
-            return true;
-        }
-
-        return await db.PlanningApplications
-            .AnyAsync(
-                application => application.PlanningAuthorityId == authorityId
-                    && ((application.ValidatedDate >= weekStart && application.ValidatedDate < weekEnd)
-                        || (application.ReceivedDate >= weekStart && application.ReceivedDate < weekEnd)),
-                cancellationToken);
-    }
 
     private static async Task OpenWeeklyListAsync(IPage page, Uri baseUri)
     {
@@ -346,45 +559,6 @@ public sealed class PlanningPortalScraper(
             .ClickAsync();
 
         await page.WaitForLoadStateAsync(LoadState.DOMContentLoaded);
-    }
-
-    private static async Task<bool> TrySelectPreviousWeekAsync(IPage page, Uri baseUri)
-    {
-        var weeklyListUri = new Uri(baseUri, "search.do?action=weeklyList&searchType=Application");
-        await page.GotoAsync(weeklyListUri.ToString(), new PageGotoOptions
-        {
-            WaitUntil = WaitUntilState.DOMContentLoaded
-        });
-
-        var weekSelect = page.Locator("#week");
-        if (await weekSelect.CountAsync() == 0)
-        {
-            return false;
-        }
-
-        var weekValuesJson = await page.Locator("#week option").EvaluateAllAsync<string>(
-            """
-            options => JSON.stringify(options.map(option => option.value).filter(Boolean))
-            """);
-        var weekValues = JsonSerializer.Deserialize<List<string>>(weekValuesJson, JsonOptions) ?? [];
-
-        if (weekValues.Count < 2)
-        {
-            return false;
-        }
-
-        var selectedWeek = await weekSelect.InputValueAsync();
-        var selectedIndex = weekValues.FindIndex(value => value.Equals(selectedWeek, StringComparison.OrdinalIgnoreCase));
-        var previousWeekIndex = selectedIndex >= 0 ? selectedIndex + 1 : 1;
-
-        if (previousWeekIndex >= weekValues.Count)
-        {
-            return false;
-        }
-
-        await weekSelect.SelectOptionAsync(weekValues[previousWeekIndex]);
-
-        return true;
     }
 
     private static async Task<WeeklyListSelection?> TryGetSelectedWeekAsync(IPage page)
@@ -464,35 +638,52 @@ public sealed class PlanningPortalScraper(
         return null;
     }
 
-    private static async Task TrySetResultsPerPageToMaximumAsync(IPage page)
+    private static async Task TrySetResultsPerPageToMaximumAsync(
+        IPage page,
+        ILogger logger,
+        PlanningAuthority authority,
+        AuthorityFileLog authorityLog)
     {
         var select = page.Locator("#resultsPerPage");
 
         if (await select.CountAsync() == 0)
         {
+            logger.LogDebug("No results per page selector found for {PlanningAuthorityName}", authority.Name);
+            authorityLog.WriteSummary("No results-per-page selector found; keeping the portal default page size.");
             return;
         }
 
         try
         {
             await select.SelectOptionAsync("100");
+            authorityLog.WriteSummary("Selected 100 results per page.");
 
             var submit = page.Locator("#searchResults input[type='submit'], #searchfilters input[type='submit']").First;
             if (await submit.CountAsync() > 0)
             {
                 await submit.ClickAsync();
                 await page.WaitForLoadStateAsync(LoadState.DOMContentLoaded);
+                authorityLog.WriteSummary($"Results-per-page form submitted; page loaded: {page.Url}");
             }
         }
-        catch (PlaywrightException)
+        catch (PlaywrightException ex)
+            when (IsRestartableBrowserFailure(ex))
         {
-            // Some councils expose fewer page-size options. Pagination still handles the remaining records.
+            throw;
+        }
+        catch (PlaywrightException ex)
+        {
+            logger.LogDebug("No results per page selector found for {PlanningAuthorityName}", authority.Name);
+            authorityLog.WriteSummary($"Could not select 100 results per page: {ex.Message}");
         }
     }
 
-    private static async Task<IReadOnlyList<SearchResultDto>> CollectResultLinksAsync(
+    private static async Task<List<SearchResultDto>> CollectResultLinksAsync(
         IPage page,
         Uri baseUri,
+        ILogger logger,
+        PlanningAuthority authority,
+        AuthorityFileLog authorityLog,
         CancellationToken cancellationToken)
     {
         var results = new List<SearchResultDto>();
@@ -503,26 +694,34 @@ public sealed class PlanningPortalScraper(
             cancellationToken.ThrowIfCancellationRequested();
 
             visitedPages.Add(page.Url);
-            results.AddRange(await ExtractSearchResultsAsync(page));
+            var pageResults = await ExtractSearchResultsAsync(page);
+            results.AddRange(pageResults);
+            authorityLog.WriteSummary(
+                $"Search results page {visitedPages.Count}: extracted {pageResults.Count} result links from {page.Url}");
 
             var next = page.Locator("p.pager.bottom a.next, p.pager.top a.next").First;
             if (await next.CountAsync() == 0)
             {
+                logger.LogDebug("No next page link found for {PlanningAuthorityName}", authority.Name);
+                authorityLog.WriteSummary("No next search results page link found.");
                 break;
             }
 
             var nextHref = await next.GetAttributeAsync("href");
             if (string.IsNullOrWhiteSpace(nextHref))
             {
+                authorityLog.WriteSummary("Next search results page link did not contain an href.");
                 break;
             }
 
             var nextUrl = new Uri(baseUri, WebUtility.HtmlDecode(nextHref)).ToString();
             if (!visitedPages.Add(nextUrl))
             {
+                authorityLog.WriteSummary($"Stopping search result pagination because {nextUrl} was already visited.");
                 break;
             }
 
+            authorityLog.WriteSummary($"Opening next search results page: {nextUrl}");
             await page.GotoAsync(nextUrl, new PageGotoOptions
             {
                 WaitUntil = WaitUntilState.DOMContentLoaded
@@ -560,18 +759,31 @@ public sealed class PlanningPortalScraper(
         IPage page,
         Uri baseUri,
         SearchResultDto resultLink,
+        ApplicationFileLog applicationLog,
         CancellationToken cancellationToken)
     {
         var applicationUrl = new Uri(baseUri, WebUtility.HtmlDecode(resultLink.Url)).ToString();
         var sourceKey = ExtractQueryValue(applicationUrl, "keyVal");
+        var summaryUrl = BuildApplicationTabUrl(applicationUrl, "summary");
+
+        applicationLog.WriteSection("Input");
+        applicationLog.WriteKeyValue("Weekly result title", resultLink.Title);
+        applicationLog.WriteKeyValue("Weekly result address", resultLink.Address);
+        applicationLog.WriteKeyValue("Weekly result meta", resultLink.Meta);
+        applicationLog.WriteKeyValue("Application URL", applicationUrl);
+        applicationLog.WriteKeyValue("Source key", sourceKey);
 
         logger.LogDebug("Opening summary tab for planning application {ApplicationUrl}", applicationUrl);
-        await page.GotoAsync(BuildApplicationTabUrl(applicationUrl, "summary"), new PageGotoOptions
+        applicationLog.WriteSection("Summary Tab");
+        applicationLog.WriteKeyValue("Navigating to", summaryUrl);
+        await page.GotoAsync(summaryUrl, new PageGotoOptions
         {
             WaitUntil = WaitUntilState.DOMContentLoaded
         });
+        applicationLog.WriteKeyValue("Loaded URL", page.Url);
 
         var details = await ExtractDetailsAsync(page);
+        applicationLog.WriteDictionary("Summary Details", details);
         var reference = GetValue(details, "Reference");
         var proposal = GetValue(details, "Proposal");
         var address = GetValue(details, "Address");
@@ -588,6 +800,7 @@ public sealed class PlanningPortalScraper(
             ReceivedDate = ParsePortalDate(GetValue(details, "Application Received")),
             ValidatedDate = ParsePortalDate(GetValue(details, "Application Validated"))
         };
+        applicationLog.WriteApplicationFields(application);
 
         logger.LogInformation(
             "Scraping planning application {ApplicationReference} ({SourceKey}) from {ApplicationUrl}",
@@ -596,25 +809,50 @@ public sealed class PlanningPortalScraper(
             applicationUrl);
 
         logger.LogDebug("Opening contacts tab for planning application {ApplicationReference}", application.ApplicationReference ?? application.SourceKey);
-        await page.GotoAsync(BuildApplicationTabUrl(applicationUrl, "contacts"), new PageGotoOptions
+        var contactsUrl = BuildApplicationTabUrl(applicationUrl, "contacts");
+        applicationLog.WriteSection("Contacts Tab");
+        applicationLog.WriteKeyValue("Navigating to", contactsUrl);
+        await page.GotoAsync(contactsUrl, new PageGotoOptions
         {
             WaitUntil = WaitUntilState.DOMContentLoaded
         });
-        ApplyContacts(application, await ExtractContactsAsync(page));
+        applicationLog.WriteKeyValue("Loaded URL", page.Url);
+        var contacts = await ExtractContactsAsync(page);
+        applicationLog.WriteContacts(contacts);
+        ApplyContacts(application, contacts);
+        applicationLog.WriteSection("Mapped Contact Fields");
+        applicationLog.WriteKeyValue("Applicant name", application.ApplicantName);
+        applicationLog.WriteKeyValue("Applicant email", application.ApplicantEmail);
+        applicationLog.WriteKeyValue("Applicant phone", application.ApplicantPhone);
+        applicationLog.WriteKeyValue("Agent name", application.AgentName);
+        applicationLog.WriteKeyValue("Agent email", application.AgentEmail);
+        applicationLog.WriteKeyValue("Agent phone", application.AgentPhone);
 
         logger.LogDebug("Opening details tab for planning application {ApplicationReference}", application.ApplicationReference ?? application.SourceKey);
-        await page.GotoAsync(BuildApplicationTabUrl(applicationUrl, "details"), new PageGotoOptions
+        var detailsUrl = BuildApplicationTabUrl(applicationUrl, "details");
+        applicationLog.WriteSection("Details Tab");
+        applicationLog.WriteKeyValue("Navigating to", detailsUrl);
+        await page.GotoAsync(detailsUrl, new PageGotoOptions
         {
             WaitUntil = WaitUntilState.DOMContentLoaded
         });
-        ApplyFurtherInformation(application, await ExtractFurtherInformationAsync(page));
+        applicationLog.WriteKeyValue("Loaded URL", page.Url);
+        var furtherInformation = await ExtractFurtherInformationAsync(page);
+        applicationLog.WriteDictionary("Further Information Fields", furtherInformation.Fields);
+        ApplyFurtherInformation(application, furtherInformation);
+        applicationLog.WriteKeyValue("Company name", application.CompanyName);
 
         logger.LogDebug("Opening documents tab for planning application {ApplicationReference}", application.ApplicationReference ?? application.SourceKey);
-        await page.GotoAsync(BuildApplicationTabUrl(applicationUrl, "documents"), new PageGotoOptions
+        var documentsUrl = BuildApplicationTabUrl(applicationUrl, "documents");
+        applicationLog.WriteSection("Documents Tab");
+        applicationLog.WriteKeyValue("Navigating to", documentsUrl);
+        await page.GotoAsync(documentsUrl, new PageGotoOptions
         {
             WaitUntil = WaitUntilState.DOMContentLoaded
         });
+        applicationLog.WriteKeyValue("Loaded URL", page.Url);
         var documents = await ExtractDocumentsAsync(page);
+        applicationLog.WriteLine($"Found {documents.Count} document rows.");
         logger.LogInformation(
             "Found {DocumentCount} documents for planning application {ApplicationReference}",
             documents.Count,
@@ -624,6 +862,7 @@ public sealed class PlanningPortalScraper(
         {
             cancellationToken.ThrowIfCancellationRequested();
             var document = documents[index];
+            applicationLog.WriteDocumentStart(document, index + 1, documents.Count);
 
             logger.LogInformation(
                 "Extracting document {DocumentIndex}/{DocumentCount} for planning application {ApplicationReference}: {DocumentName} ({DocumentType})",
@@ -633,13 +872,25 @@ public sealed class PlanningPortalScraper(
                 document.Name,
                 document.DocumentType);
 
-            var extraction = await documentContentService.ExtractAsync(document.Url, page.Context, cancellationToken);
+            PlanningDocumentTextExtractionResult extraction;
+            try
+            {
+                extraction = await documentContentService.ExtractAsync(document.Url, page.Context, cancellationToken);
+            }
+            catch (Exception ex)
+            {
+                applicationLog.WriteLine($"Document extraction failed for {document.Url}.");
+                applicationLog.WriteException(ex);
+                throw;
+            }
+
             document.ContentText = extraction.ContentText;
             document.FileName = extraction.FileName;
             document.ContentType = extraction.ContentType;
             document.ParseStatus = extraction.ParseStatus;
             document.ParseError = extraction.ParseError;
             document.ParsedAt = DateTime.UtcNow;
+            applicationLog.WriteDocumentExtractionResult(document);
 
             logger.LogInformation(
                 "Document extraction finished with status {ParseStatus} for {DocumentFileName}; extracted {CharacterCount} characters",
@@ -649,6 +900,10 @@ public sealed class PlanningPortalScraper(
 
             application.Documents.Add(document);
         }
+
+        applicationLog.WriteSection("Scraped Application Result");
+        applicationLog.WriteApplicationFields(application);
+        applicationLog.WriteKeyValue("Documents added", application.Documents.Count);
 
         return application;
     }
@@ -951,6 +1206,65 @@ public sealed class PlanningPortalScraper(
         target.ScrapedAt = DateTime.UtcNow;
     }
 
+    private static string DescribeSearchResult(SearchResultDto result)
+    {
+        var sourceKey = ExtractQueryValue(result.Url, "keyVal");
+        var reference = ExtractReferenceFromMeta(result.Meta);
+        var label = FirstNonEmpty(reference, result.Title, sourceKey, result.Url) ?? "unknown application";
+        var parts = new List<string> { label };
+
+        if (!string.IsNullOrWhiteSpace(sourceKey))
+        {
+            parts.Add($"sourceKey={sourceKey}");
+        }
+
+        if (!string.IsNullOrWhiteSpace(result.Address))
+        {
+            parts.Add($"address={NormalizeText(result.Address)}");
+        }
+
+        if (!string.IsNullOrWhiteSpace(result.Url))
+        {
+            parts.Add($"url={result.Url}");
+        }
+
+        return string.Join(" | ", parts);
+    }
+
+    private static string DescribeScrapedApplication(ScrapedApplication application)
+    {
+        var label = FirstNonEmpty(application.ApplicationReference, application.Title, application.SourceKey)
+            ?? "unknown application";
+        var parts = new List<string> { label };
+
+        if (!string.IsNullOrWhiteSpace(application.SourceKey))
+        {
+            parts.Add($"sourceKey={application.SourceKey}");
+        }
+
+        if (!string.IsNullOrWhiteSpace(application.Status))
+        {
+            parts.Add($"status={application.Status}");
+        }
+
+        if (!string.IsNullOrWhiteSpace(application.Address))
+        {
+            parts.Add($"address={application.Address}");
+        }
+
+        return string.Join(" | ", parts);
+    }
+
+    private static string FormatUtc(DateTime value)
+    {
+        return value.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture);
+    }
+
+    private static bool IsRestartableBrowserFailure(Exception exception)
+    {
+        return PlaywrightBrowserFailure.IsRestartable(exception);
+    }
+
     private static Uri NormalizeBaseUri(string website)
     {
         var trimmed = website.Trim();
@@ -985,14 +1299,38 @@ public sealed class PlanningPortalScraper(
             return null;
         }
 
-        var match = Regex.Match(meta, @"Ref\.?\s*No:\s*(?<reference>.*?)(?:\s*\||$)", RegexOptions.IgnoreCase);
+        var match = Regex.Match(
+            meta,
+            @"(?:Ref\.?\s*No|Application\.?\s*No|Application\s*No|Reference)\s*:\s*(?<reference>.*?)(?:\s*\||$)",
+            RegexOptions.IgnoreCase);
         return match.Success ? NormalizeText(match.Groups["reference"].Value) : null;
     }
 
     private static string? ExtractQueryValue(string url, string key)
     {
-        var match = Regex.Match(url, $@"[?&]{Regex.Escape(key)}=([^&]+)", RegexOptions.IgnoreCase);
-        return match.Success ? WebUtility.UrlDecode(match.Groups[1].Value) : null;
+        var decodedUrl = WebUtility.HtmlDecode(url);
+        var queryStart = decodedUrl.IndexOf('?', StringComparison.Ordinal);
+        var query = queryStart >= 0 ? decodedUrl[(queryStart + 1)..] : decodedUrl;
+        var fragmentStart = query.IndexOf('#', StringComparison.Ordinal);
+        if (fragmentStart >= 0)
+        {
+            query = query[..fragmentStart];
+        }
+
+        foreach (var parameter in query.Split('&', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            var separator = parameter.IndexOf('=', StringComparison.Ordinal);
+            var parameterName = separator >= 0 ? parameter[..separator] : parameter;
+            if (!parameterName.Equals(key, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            var parameterValue = separator >= 0 ? parameter[(separator + 1)..] : string.Empty;
+            return NormalizeText(WebUtility.UrlDecode(parameterValue));
+        }
+
+        return null;
     }
 
     private static string? GetValue(Dictionary<string, string> details, string key)
@@ -1053,9 +1391,489 @@ public sealed class PlanningPortalScraper(
         return value is null || value.Length <= maxLength ? value : value[..maxLength];
     }
 
+    private sealed class BrowserSession(ILogger logger) : IAsyncDisposable
+    {
+        private IPlaywright? _playwright;
+        private IBrowser? _browser;
+
+        public IBrowser Browser => _browser
+            ?? throw new InvalidOperationException("The Playwright browser session has not been started.");
+
+        public async Task StartAsync()
+        {
+            if (_browser is not null)
+            {
+                throw new InvalidOperationException("The Playwright browser session has already been started.");
+            }
+
+            _playwright = await Playwright.CreateAsync();
+
+            try
+            {
+                _browser = await _playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions
+                {
+                    Headless = true
+                });
+                logger.LogDebug("Launched headless Chromium for weekly planning import scrape");
+            }
+            catch
+            {
+                _playwright.Dispose();
+                _playwright = null;
+                throw;
+            }
+        }
+
+        public async Task RestartAsync(TimeSpan restartDelay, CancellationToken cancellationToken)
+        {
+            await StopAsync();
+
+            if (restartDelay > TimeSpan.Zero)
+            {
+                await Task.Delay(restartDelay, cancellationToken);
+            }
+
+            await StartAsync();
+        }
+
+        public async ValueTask DisposeAsync()
+        {
+            await StopAsync();
+        }
+
+        private async Task StopAsync()
+        {
+            var browser = _browser;
+            _browser = null;
+
+            if (browser is not null)
+            {
+                try
+                {
+                    await browser.CloseAsync();
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    logger.LogDebug(ex, "Ignoring failure while closing Playwright browser during restart");
+                }
+
+                try
+                {
+                    await browser.DisposeAsync();
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    logger.LogDebug(ex, "Ignoring failure while disposing Playwright browser during restart");
+                }
+            }
+
+            _playwright?.Dispose();
+            _playwright = null;
+        }
+    }
+
+    private sealed class ScraperFileLogger
+    {
+        private const string DefaultLogDirectory = "Services/ScraperLogs";
+        private readonly ILogger _logger;
+        private readonly string? _runSummaryPath;
+
+        private ScraperFileLogger(string? rootDirectory, DateTime runStartedAtUtc, ILogger logger)
+        {
+            RootDirectory = rootDirectory ?? string.Empty;
+            RunStamp = runStartedAtUtc.ToString("yyyyMMdd-HHmmss", CultureInfo.InvariantCulture);
+            _logger = logger;
+            _runSummaryPath = rootDirectory is null
+                ? null
+                : Path.Combine(rootDirectory, $"weekly-summary-{RunStamp}.txt");
+        }
+
+        public bool Enabled => !string.IsNullOrWhiteSpace(RootDirectory);
+
+        public string RootDirectory { get; }
+
+        public string RunStamp { get; }
+
+        public static ScraperFileLogger Create(
+            string contentRootPath,
+            string? configuredDirectory,
+            DateTime runStartedAtUtc,
+            ILogger logger)
+        {
+            var logDirectory = FirstNonEmpty(configuredDirectory, DefaultLogDirectory)!;
+            var rootDirectory = Path.IsPathRooted(logDirectory)
+                ? logDirectory
+                : Path.GetFullPath(Path.Combine(contentRootPath, logDirectory));
+
+            try
+            {
+                Directory.CreateDirectory(rootDirectory);
+                return new ScraperFileLogger(rootDirectory, runStartedAtUtc, logger);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                logger.LogWarning(
+                    ex,
+                    "Scraper text logging is disabled because log directory {ScraperLogDirectory} could not be prepared",
+                    rootDirectory);
+
+                return new ScraperFileLogger(null, runStartedAtUtc, logger);
+            }
+        }
+
+        public void WriteRunSummary(string message)
+        {
+            AppendLine(_runSummaryPath, message);
+        }
+
+        public AuthorityFileLog CreateAuthorityLog(PlanningAuthority authority)
+        {
+            if (!Enabled)
+            {
+                return AuthorityFileLog.Disabled(this);
+            }
+
+            var authorityDirectory = Path.Combine(
+                RootDirectory,
+                SafeFileName(authority.Name, authority.Id.ToString("N")));
+
+            try
+            {
+                Directory.CreateDirectory(authorityDirectory);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger.LogWarning(
+                    ex,
+                    "Could not create scraper log folder {ScraperAuthorityLogDirectory} for {PlanningAuthorityName}",
+                    authorityDirectory,
+                    authority.Name);
+
+                return AuthorityFileLog.Disabled(this);
+            }
+
+            return new AuthorityFileLog(this, authorityDirectory, Path.Combine(authorityDirectory, "summary.txt"));
+        }
+
+        public ApplicationFileLog CreateApplicationLog(
+            AuthorityFileLog authorityLog,
+            SearchResultDto result,
+            int index,
+            int total)
+        {
+            if (!authorityLog.Enabled)
+            {
+                return ApplicationFileLog.Disabled(this);
+            }
+
+            var label = FirstNonEmpty(
+                ExtractReferenceFromMeta(result.Meta),
+                ExtractQueryValue(result.Url, "keyVal"),
+                result.Title,
+                $"application-{index:000}")!;
+            var fileName = $"{RunStamp}-{index:000}-of-{total:000}-{SafeFileName(label, $"application-{index:000}")}.txt";
+            var filePath = GetUniquePath(Path.Combine(authorityLog.DirectoryPath, fileName));
+            AppendLine(filePath, $"Detail log created for application {index}/{total}.");
+
+            return new ApplicationFileLog(this, filePath);
+        }
+
+        public void AppendLine(string? path, string message)
+        {
+            if (string.IsNullOrWhiteSpace(path))
+            {
+                return;
+            }
+
+            try
+            {
+                var directory = Path.GetDirectoryName(path);
+                if (!string.IsNullOrWhiteSpace(directory))
+                {
+                    Directory.CreateDirectory(directory);
+                }
+
+                var timestamp = FormatUtc(DateTime.UtcNow);
+                var builder = new StringBuilder();
+                foreach (var line in SplitLines(message))
+                {
+                    builder
+                        .Append('[')
+                        .Append(timestamp)
+                        .Append("] ")
+                        .AppendLine(line);
+                }
+
+                File.AppendAllText(path, builder.ToString(), Encoding.UTF8);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger.LogWarning(ex, "Could not write scraper text log {ScraperLogPath}", path);
+            }
+        }
+
+        private static IEnumerable<string> SplitLines(string message)
+        {
+            var normalized = message
+                .Replace("\r\n", "\n", StringComparison.Ordinal)
+                .Replace('\r', '\n');
+            var lines = normalized.Split('\n');
+            return lines.Length == 0 ? [""] : lines;
+        }
+
+        private static string GetUniquePath(string path)
+        {
+            if (!File.Exists(path))
+            {
+                return path;
+            }
+
+            var directory = Path.GetDirectoryName(path) ?? string.Empty;
+            var name = Path.GetFileNameWithoutExtension(path);
+            var extension = Path.GetExtension(path);
+
+            for (var counter = 2; counter < 1000; counter++)
+            {
+                var candidate = Path.Combine(directory, $"{name}-{counter}{extension}");
+                if (!File.Exists(candidate))
+                {
+                    return candidate;
+                }
+            }
+
+            return Path.Combine(directory, $"{name}-{Guid.NewGuid():N}{extension}");
+        }
+
+        private static string SafeFileName(string? value, string fallback)
+        {
+            var invalidCharacters = Path.GetInvalidFileNameChars()
+                .Concat(['<', '>', ':', '"', '/', '\\', '|', '?', '*'])
+                .ToHashSet();
+            var normalized = FirstNonEmpty(value, fallback) ?? fallback;
+            var builder = new StringBuilder(normalized.Length);
+
+            foreach (var character in normalized)
+            {
+                builder.Append(invalidCharacters.Contains(character) || char.IsControl(character)
+                    ? '-'
+                    : character);
+            }
+
+            var safe = WhitespaceRegex.Replace(builder.ToString(), " ").Trim(' ', '.', '-');
+            if (string.IsNullOrWhiteSpace(safe))
+            {
+                safe = fallback;
+            }
+
+            return safe.Length <= 120 ? safe : safe[..120].Trim(' ', '.', '-');
+        }
+    }
+
+    private sealed class AuthorityFileLog
+    {
+        private readonly ScraperFileLogger _owner;
+        private readonly string? _summaryPath;
+
+        public AuthorityFileLog(ScraperFileLogger owner, string directoryPath, string summaryPath)
+        {
+            _owner = owner;
+            DirectoryPath = directoryPath;
+            _summaryPath = summaryPath;
+        }
+
+        private AuthorityFileLog(ScraperFileLogger owner)
+        {
+            _owner = owner;
+            DirectoryPath = string.Empty;
+        }
+
+        public bool Enabled => !string.IsNullOrWhiteSpace(_summaryPath);
+
+        public string DirectoryPath { get; }
+
+        public static AuthorityFileLog Disabled(ScraperFileLogger owner)
+        {
+            return new AuthorityFileLog(owner);
+        }
+
+        public void StartRun(PlanningAuthority authority, DateTime startedAtUtc)
+        {
+            WriteSummary(string.Empty);
+            WriteSummary("============================================================");
+            WriteSummary($"Run {_owner.RunStamp} started at {FormatUtc(startedAtUtc)}.");
+            WriteSummary($"Authority: {authority.Name}");
+            WriteSummary($"AuthorityId: {authority.Id}");
+            WriteSummary($"Website: {authority.Website}");
+            WriteSummary($"Authority log folder: {DirectoryPath}");
+        }
+
+        public void WriteSummary(string message)
+        {
+            _owner.AppendLine(_summaryPath, message);
+        }
+
+        public void WriteExceptionSummary(Exception exception)
+        {
+            WriteSummary("Exception details:");
+            _owner.AppendLine(_summaryPath, exception.ToString());
+        }
+
+        public ApplicationFileLog CreateApplicationLog(SearchResultDto result, int index, int total)
+        {
+            return _owner.CreateApplicationLog(this, result, index, total);
+        }
+    }
+
+    private sealed class ApplicationFileLog
+    {
+        private readonly ScraperFileLogger _owner;
+        private readonly string? _filePath;
+
+        public ApplicationFileLog(ScraperFileLogger owner, string filePath)
+        {
+            _owner = owner;
+            _filePath = filePath;
+            FileName = Path.GetFileName(filePath);
+        }
+
+        private ApplicationFileLog(ScraperFileLogger owner)
+        {
+            _owner = owner;
+            FileName = "(file logging disabled)";
+        }
+
+        public string FileName { get; }
+
+        public static ApplicationFileLog Disabled(ScraperFileLogger owner)
+        {
+            return new ApplicationFileLog(owner);
+        }
+
+        public void WriteSection(string title)
+        {
+            WriteLine(string.Empty);
+            WriteLine($"--- {title} ---");
+        }
+
+        public void WriteLine(string message)
+        {
+            _owner.AppendLine(_filePath, message);
+        }
+
+        public void WriteKeyValue(string key, object? value)
+        {
+            WriteLine($"{key}: {RenderValue(value)}");
+        }
+
+        public void WriteDictionary(string title, IReadOnlyDictionary<string, string> values)
+        {
+            WriteSection(title);
+            if (values.Count == 0)
+            {
+                WriteLine("(no values found)");
+                return;
+            }
+
+            foreach (var value in values)
+            {
+                WriteKeyValue(value.Key, value.Value);
+            }
+        }
+
+        public void WriteContacts(IReadOnlyList<ContactSectionDto> contacts)
+        {
+            WriteSection("Extracted Contact Sections");
+            if (contacts.Count == 0)
+            {
+                WriteLine("(no contact sections found)");
+                return;
+            }
+
+            for (var index = 0; index < contacts.Count; index++)
+            {
+                var contact = contacts[index];
+                WriteLine($"Contact section {index + 1}/{contacts.Count}: {contact.Heading}");
+                WriteKeyValue("Name", contact.Name);
+
+                if (contact.Rows.Count == 0)
+                {
+                    WriteLine("Rows: (none)");
+                    continue;
+                }
+
+                foreach (var row in contact.Rows)
+                {
+                    WriteKeyValue(row.Key, row.Value);
+                }
+            }
+        }
+
+        public void WriteApplicationFields(ScrapedApplication application)
+        {
+            WriteSection("Application Fields");
+            WriteKeyValue("Title", application.Title);
+            WriteKeyValue("Description", application.Description);
+            WriteKeyValue("Address", application.Address);
+            WriteKeyValue("Application reference", application.ApplicationReference);
+            WriteKeyValue("Source key", application.SourceKey);
+            WriteKeyValue("Source URL", application.SourceUrl);
+            WriteKeyValue("Status", application.Status);
+            WriteKeyValue("Received date", application.ReceivedDate);
+            WriteKeyValue("Validated date", application.ValidatedDate);
+            WriteKeyValue("Applicant name", application.ApplicantName);
+            WriteKeyValue("Applicant email", application.ApplicantEmail);
+            WriteKeyValue("Applicant phone", application.ApplicantPhone);
+            WriteKeyValue("Agent name", application.AgentName);
+            WriteKeyValue("Agent email", application.AgentEmail);
+            WriteKeyValue("Agent phone", application.AgentPhone);
+            WriteKeyValue("Company name", application.CompanyName);
+        }
+
+        public void WriteDocumentStart(ScrapedDocument document, int index, int total)
+        {
+            WriteSection($"Document {index}/{total}");
+            WriteKeyValue("Name", document.Name);
+            WriteKeyValue("Document type", document.DocumentType);
+            WriteKeyValue("Published date", document.PublishedDate);
+            WriteKeyValue("URL", document.Url);
+        }
+
+        public void WriteDocumentExtractionResult(ScrapedDocument document)
+        {
+            WriteKeyValue("Parse status", document.ParseStatus);
+            WriteKeyValue("Parse error", document.ParseError);
+            WriteKeyValue("File name", document.FileName);
+            WriteKeyValue("Content type", document.ContentType);
+            WriteKeyValue("Parsed at UTC", document.ParsedAt);
+            WriteKeyValue("Extracted character count", document.ContentText?.Length ?? 0);
+        }
+
+        public void WriteException(Exception exception)
+        {
+            WriteSection("Exception");
+            WriteLine(exception.ToString());
+        }
+
+        private static string RenderValue(object? value)
+        {
+            return value switch
+            {
+                null => "(null)",
+                DateTime dateTime => FormatUtc(dateTime),
+                DateTimeOffset dateTimeOffset => dateTimeOffset.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture),
+                _ => NormalizeText(Convert.ToString(value, CultureInfo.InvariantCulture)) ?? "(empty)"
+            };
+        }
+    }
+
     private sealed record SaveResult(int ApplicationsSaved, int DocumentsSaved);
 
     private sealed record AuthorityScrapeResult(IReadOnlyList<ScrapedApplication> Applications, bool Skipped);
+
+    private sealed record PreviouslyScrapedFilterResult(int SkippedLinkCount, IReadOnlyList<string> SkippedApplications)
+    {
+        public static PreviouslyScrapedFilterResult Empty { get; } = new(0, Array.Empty<string>());
+    }
 
     private sealed record WeeklyListSelection(string Value, string Label, DateTime WeekStart);
 

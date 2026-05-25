@@ -1,0 +1,36 @@
+@if (Criterion is not null)
+{
+    <div class="modal-backdrop" @onclick="OnClose">
+        <section class="modal-panel search-settings-modal" role="dialog" aria-modal="true" aria-labelledby="search-settings-modal-title" @onclick:stopPropagation="true">
+            <header class="modal-header">
+                <div>
+                    <p class="planning-authority">@Context</p>
+                    <h2 id="search-settings-modal-title">Criteria settings</h2>
+                </div>
+                <button class="secondary-button" type="button" @onclick="OnClose">Close</button>
+            </header>
+
+            <div class="search-settings-options">
+                <label class="setting-checkbox">
+                    <input type="checkbox" @bind="Criterion.RequireAdjacentWords" />
+                    <span>Words must be next to each other in the document</span>
+                </label>
+            </div>
+
+            <footer class="modal-actions">
+                <button class="primary-button" type="button" @onclick="OnClose">Done</button>
+            </footer>
+        </section>
+    </div>
+}
+
+@code {
+    [Parameter]
+    public PlanningSearchCriterionInput? Criterion { get; set; }
+
+    [Parameter]
+    public string Context { get; set; } = "Keyword search";
+
+    [Parameter]
+    public EventCallback OnClose { get; set; }
+}

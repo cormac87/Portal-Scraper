@@ -1,0 +1,153 @@
+@using PortalScraper.Data
+@inject IRelevantPlanningDocumentService RelevantDocumentService
+@inject IPlanningSearchService PlanningSearchService
+
+@if (Application is not null)
+{
+    <div class="modal-backdrop modal-backdrop-top" @onclick="OnClose">
+        <section class="modal-panel documents-modal" role="dialog" aria-modal="true" aria-labelledby="relevant-documents-modal-title" @onclick:stopPropagation="true">
+            <header class="modal-header">
+                <div>
+                    <p class="planning-authority">@PlanningDisplayFormatter.DisplayValue(Application.ApplicationReference)</p>
+                    <h2 id="relevant-documents-modal-title">Relevant documents (@_relevantDocumentMatches.Count)</h2>
+                    @if (!string.IsNullOrWhiteSpace(_criteriaText))
+                    {
+                        <p class="modal-subtitle">Matches for @_criteriaText</p>
+                    }
+                </div>
+                <button class="secondary-button" type="button" @onclick="OnClose">Close</button>
+            </header>
+
+            @if (_criteriaFilters.Count > 0)
+            {
+                <fieldset class="relevant-criteria-filter">
+                    <legend>Criteria</legend>
+                    <div class="relevant-criteria-options">
+                        @foreach (var filter in _criteriaFilters)
+                        {
+                            <label class="criterion-checkbox" @key="filter.Id">
+                                <input type="checkbox"
+                                       checked="@filter.IsSelected"
+                                       @onchange="args => ToggleRelevantDocumentCriterion(filter, args)" />
+                                <span>@filter.Criterion.DisplayText</span>
+                            </label>
+                        }
+                    </div>
+                </fieldset>
+            }
+
+            @if (_relevantDocumentMatches.Count == 0)
+            {
+                <p class="document-empty">@EmptyMessage</p>
+            }
+            else
+            {
+                <div class="document-list modal-document-list">
+                    @foreach (var match in _relevantDocumentMatches)
+                    {
+                        <article class="document-card modal-document-card relevant-document-card" @key="match.Document.Id">
+                            <header>
+                                <div>
+                                    <h3>@match.Document.Name</h3>
+                                    <p>@match.Document.DocumentType | @PlanningDisplayFormatter.FormatDate(match.Document.PublishedDate) | @PlanningDisplayFormatter.DisplayValue(match.Document.ParseStatus)</p>
+                                </div>
+                                <span class="match-count">@FormatMatchCount(match.MatchCount)</span>
+                            </header>
+
+                            <div class="document-expanded-content">
+                                @if (!string.IsNullOrWhiteSpace(match.Document.Url))
+                                {
+                                    <div class="planning-links">
+                                        <a href="@match.Document.Url" target="_blank" rel="noopener noreferrer">Open source document</a>
+                                    </div>
+                                }
+
+                                @foreach (var snippet in match.Snippets)
+                                {
+                                    <pre class="search-preview relevant-snippet">@((MarkupString)snippet.HighlightedHtml)</pre>
+                                }
+                            </div>
+                        </article>
+                    }
+                </div>
+            }
+        </section>
+    </div>
+}
+
+@code {
+    private readonly List<RelevantDocumentCriterionFilter> _criteriaFilters = [];
+    private List<RelevantDocumentMatch> _relevantDocumentMatches = [];
+    private Guid? _lastApplicationId;
+    private string? _lastCriteriaSignature;
+    private string? _criteriaText;
+
+    [Parameter]
+    public PlanningApplication? Application { get; set; }
+
+    [Parameter]
+    public IReadOnlyList<FullTextSearchCriterion> Criteria { get; set; } = [];
+
+    [Parameter]
+    public EventCallback OnClose { get; set; }
+
+    private string EmptyMessage => _criteriaFilters.Any(filter => filter.IsSelected)
+        ? "No stored document text matched the selected criteria."
+        : "Select at least one criterion to show relevant documents.";
+
+    protected override void OnParametersSet()
+    {
+        var criteriaSignature = string.Join("|", Criteria.Select(criterion => $"{criterion.DisplayText}:{criterion.SearchCondition}:{criterion.RequireAdjacentWords}"));
+        if (Application?.Id == _lastApplicationId && criteriaSignature == _lastCriteriaSignature)
+        {
+            return;
+        }
+
+        _lastApplicationId = Application?.Id;
+        _lastCriteriaSignature = criteriaSignature;
+        _criteriaFilters.Clear();
+        _criteriaFilters.AddRange(Criteria.Select((criterion, index) => new RelevantDocumentCriterionFilter
+        {
+            Id = index,
+            Criterion = criterion,
+            IsSelected = true
+        }));
+        RefreshRelevantDocumentMatches();
+    }
+
+    private void ToggleRelevantDocumentCriterion(RelevantDocumentCriterionFilter filter, ChangeEventArgs args)
+    {
+        filter.IsSelected = args.Value is bool isSelected && isSelected;
+        RefreshRelevantDocumentMatches();
+    }
+
+    private void RefreshRelevantDocumentMatches()
+    {
+        var selectedCriteria = _criteriaFilters
+            .Where(filter => filter.IsSelected)
+            .Select(filter => filter.Criterion)
+            .ToList();
+
+        _criteriaText = selectedCriteria.Count == 0
+            ? null
+            : PlanningSearchService.FormatCriteriaSummary(selectedCriteria);
+
+        _relevantDocumentMatches = Application is null || selectedCriteria.Count == 0
+            ? []
+            : RelevantDocumentService.BuildMatches(Application.PlanningDocuments, selectedCriteria);
+    }
+
+    private static string FormatMatchCount(int matchCount)
+    {
+        return matchCount == 1 ? "1 match" : $"{matchCount} matches";
+    }
+
+    private sealed class RelevantDocumentCriterionFilter
+    {
+        public int Id { get; set; }
+
+        public FullTextSearchCriterion Criterion { get; set; } = null!;
+
+        public bool IsSelected { get; set; }
+    }
+}

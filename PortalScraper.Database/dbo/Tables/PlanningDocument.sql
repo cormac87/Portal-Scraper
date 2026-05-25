@@ -20,3 +20,9 @@ GO
 
 CREATE UNIQUE NONCLUSTERED INDEX [UX_PlanningDocument_Application_Url]
     ON [dbo].[PlanningDocument] ([PlanningApplicationId], [Url]);
+
+GO
+
+CREATE NONCLUSTERED INDEX [IX_PlanningDocument_Application_PublishedDate]
+    ON [dbo].[PlanningDocument] ([PlanningApplicationId], [PublishedDate])
+    WHERE [PublishedDate] IS NOT NULL;

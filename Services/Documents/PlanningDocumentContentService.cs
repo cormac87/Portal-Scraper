@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Net;
 using System.Net.Http.Headers;
 using Microsoft.Playwright;
+using PortalScraper.Services;
 
 namespace PortalScraper.Services.Documents;
 
@@ -39,6 +40,11 @@ public sealed class PlanningDocumentContentService(
                 document.Url,
                 document.ContentType ?? "unknown",
                 document.Content.Length);
+        }
+        catch (Exception ex)
+            when (PlaywrightBrowserFailure.IsRestartable(ex))
+        {
+            throw;
         }
         catch (Exception ex)
         {

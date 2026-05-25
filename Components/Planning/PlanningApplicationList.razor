@@ -1,0 +1,70 @@
+@using PortalScraper.Data
+
+@if (IsLoading)
+{
+    <section class="empty-state">
+        <h2>Loading planning data</h2>
+        <p>Reading saved planning applications from the database.</p>
+    </section>
+}
+else if (Applications.Count == 0)
+{
+    <section class="empty-state">
+        <h2>No planning applications saved</h2>
+        <p>Add authority URLs to <code>PlanningAuthority</code>, then run <strong>Scrape Weekly</strong>.</p>
+    </section>
+}
+else
+{
+    <PaginationControls Summary="@Summary"
+                        CurrentPage="@CurrentPage"
+                        TotalPages="@TotalPages"
+                        IsBusy="@IsLoading"
+                        OnPrevious="OnPrevious"
+                        OnNext="OnNext" />
+
+    <section class="planning-list">
+        @foreach (var application in Applications)
+        {
+            <PlanningApplicationCard @key="application.Id"
+                                     ApplicationId="@application.Id"
+                                     AuthorityName="@application.PlanningAuthority.Name"
+                                     ApplicationReference="@application.ApplicationReference"
+                                     Title="@PlanningDisplayFormatter.ApplicationDescription(application)"
+                                     OnOpen="OnOpenApplication" />
+        }
+    </section>
+
+    <PaginationControls Summary="@Summary"
+                        CurrentPage="@CurrentPage"
+                        TotalPages="@TotalPages"
+                        IsBusy="@IsLoading"
+                        OnPrevious="OnPrevious"
+                        OnNext="OnNext" />
+}
+
+@code {
+    [Parameter]
+    public IReadOnlyList<PlanningApplication> Applications { get; set; } = [];
+
+    [Parameter]
+    public string Summary { get; set; } = string.Empty;
+
+    [Parameter]
+    public int CurrentPage { get; set; } = 1;
+
+    [Parameter]
+    public int TotalPages { get; set; } = 1;
+
+    [Parameter]
+    public bool IsLoading { get; set; }
+
+    [Parameter]
+    public EventCallback OnPrevious { get; set; }
+
+    [Parameter]
+    public EventCallback OnNext { get; set; }
+
+    [Parameter]
+    public EventCallback<Guid> OnOpenApplication { get; set; }
+}

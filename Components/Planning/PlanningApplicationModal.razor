@@ -1,0 +1,105 @@
+@using PortalScraper.Data
+
+@if (Application is not null)
+{
+    <div class="modal-backdrop" @onclick="OnClose">
+        <section class="modal-panel application-modal" role="dialog" aria-modal="true" aria-labelledby="application-modal-title" @onclick:stopPropagation="true">
+            <header class="modal-header">
+                <div>
+                    <p class="planning-authority">@Application.PlanningAuthority.Name</p>
+                    <h2 id="application-modal-title">@PlanningDisplayFormatter.DisplayValue(Application.ApplicationReference)</h2>
+                    <p class="planning-title">@PlanningDisplayFormatter.ApplicationDescription(Application)</p>
+                </div>
+                <button class="secondary-button" type="button" @onclick="OnClose">Close</button>
+            </header>
+
+            <dl class="modal-details">
+                <div>
+                    <dt>Status</dt>
+                    <dd>@PlanningDisplayFormatter.DisplayValue(Application.Status)</dd>
+                </div>
+                <div>
+                    <dt>Address</dt>
+                    <dd>@PlanningDisplayFormatter.DisplayValue(Application.Address)</dd>
+                </div>
+                <div>
+                    <dt>Received</dt>
+                    <dd>@PlanningDisplayFormatter.FormatDate(Application.ReceivedDate)</dd>
+                </div>
+                <div>
+                    <dt>Validated</dt>
+                    <dd>@PlanningDisplayFormatter.FormatDate(Application.ValidatedDate)</dd>
+                </div>
+                <div>
+                    <dt>Applicant name</dt>
+                    <dd>@PlanningDisplayFormatter.DisplayValue(Application.ApplicantName)</dd>
+                </div>
+                <div>
+                    <dt>Applicant email</dt>
+                    <dd>@PlanningDisplayFormatter.DisplayValue(Application.ApplicantEmail)</dd>
+                </div>
+                <div>
+                    <dt>Applicant phone</dt>
+                    <dd>@PlanningDisplayFormatter.DisplayValue(Application.ApplicantPhone)</dd>
+                </div>
+                <div>
+                    <dt>Agent name</dt>
+                    <dd>@PlanningDisplayFormatter.DisplayValue(Application.AgentName)</dd>
+                </div>
+                <div>
+                    <dt>Agent company</dt>
+                    <dd>@PlanningDisplayFormatter.DisplayValue(Application.CompanyName)</dd>
+                </div>
+                <div>
+                    <dt>Agent email</dt>
+                    <dd>@PlanningDisplayFormatter.DisplayValue(Application.AgentEmail)</dd>
+                </div>
+                <div>
+                    <dt>Agent phone</dt>
+                    <dd>@PlanningDisplayFormatter.DisplayValue(Application.AgentPhone)</dd>
+                </div>
+                <div>
+                    <dt>Source key</dt>
+                    <dd>@PlanningDisplayFormatter.DisplayValue(Application.SourceKey)</dd>
+                </div>
+                <div>
+                    <dt>Scraped</dt>
+                    <dd>@PlanningDisplayFormatter.FormatDateTime(Application.ScrapedAt)</dd>
+                </div>
+            </dl>
+
+            @if (!string.IsNullOrWhiteSpace(Application.SourceUrl))
+            {
+                <div class="modal-links">
+                    <a href="@Application.SourceUrl" target="_blank" rel="noopener noreferrer">Open portal record</a>
+                </div>
+            }
+
+            <footer class="modal-actions">
+                <button class="primary-button" type="button" @onclick="OnOpenDocuments" disabled="@(Application.PlanningDocuments.Count == 0)">
+                    Show all documents (@Application.PlanningDocuments.Count)
+                </button>
+                <button class="secondary-button" type="button" @onclick="OnOpenRelevantDocuments" disabled="@(!CanShowRelevantDocuments)">
+                    Show relevant documents
+                </button>
+            </footer>
+        </section>
+    </div>
+}
+
+@code {
+    [Parameter]
+    public PlanningApplication? Application { get; set; }
+
+    [Parameter]
+    public bool CanShowRelevantDocuments { get; set; }
+
+    [Parameter]
+    public EventCallback OnClose { get; set; }
+
+    [Parameter]
+    public EventCallback OnOpenDocuments { get; set; }
+
+    [Parameter]
+    public EventCallback OnOpenRelevantDocuments { get; set; }
+}

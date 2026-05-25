@@ -1,0 +1,30 @@
+@using PortalScraper.Services
+
+@if (Result is not null)
+{
+    <section class="scrape-result">
+        <div>
+            <h2>Last scrape</h2>
+            <p>
+                @PlanningDisplayFormatter.FormatDateTime(Result.StartedAtUtc) to @PlanningDisplayFormatter.FormatDateTime(Result.FinishedAtUtc):
+                @Result.ApplicationsScraped applications scraped,
+                @Result.DocumentsScraped documents found.
+            </p>
+        </div>
+
+        @if (Result.Messages.Count > 0)
+        {
+            <ul>
+                @foreach (var message in Result.Messages)
+                {
+                    <li>@message</li>
+                }
+            </ul>
+        }
+    </section>
+}
+
+@code {
+    [Parameter]
+    public WeeklyScrapeResult? Result { get; set; }
+}

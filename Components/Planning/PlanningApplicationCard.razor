@@ -1,0 +1,43 @@
+<article class="planning-card application-summary-card"
+         role="button"
+         tabindex="0"
+         @onclick="OpenAsync"
+         @onkeydown="HandleKeyDownAsync">
+    <header>
+        <div>
+            <p class="planning-authority">@AuthorityName</p>
+            <h2>@PlanningDisplayFormatter.DisplayValue(ApplicationReference)</h2>
+        </div>
+    </header>
+
+    <p class="planning-title">@Title</p>
+</article>
+
+@code {
+    [Parameter]
+    public Guid ApplicationId { get; set; }
+
+    [Parameter]
+    public string AuthorityName { get; set; } = string.Empty;
+
+    [Parameter]
+    public string? ApplicationReference { get; set; }
+
+    [Parameter]
+    public string Title { get; set; } = string.Empty;
+
+    [Parameter]
+    public EventCallback<Guid> OnOpen { get; set; }
+
+    private Task OpenAsync()
+    {
+        return OnOpen.InvokeAsync(ApplicationId);
+    }
+
+    private Task HandleKeyDownAsync(KeyboardEventArgs args)
+    {
+        return args.Key is "Enter" or " " or "Spacebar"
+            ? OpenAsync()
+            : Task.CompletedTask;
+    }
+}

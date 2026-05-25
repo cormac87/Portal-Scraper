@@ -26,6 +26,9 @@ public sealed class ApplicationDbContext(DbContextOptions<ApplicationDbContext> 
 
             entity.Property(item => item.Website)
                 .HasMaxLength(500);
+
+            entity.HasIndex(item => item.Name)
+                .HasDatabaseName("IX_PlanningAuthority_Name");
         });
 
         modelBuilder.Entity<PlanningApplication>(entity =>
@@ -79,7 +82,24 @@ public sealed class ApplicationDbContext(DbContextOptions<ApplicationDbContext> 
 
             entity.HasIndex(item => new { item.PlanningAuthorityId, item.ApplicationReference })
                 .IsUnique()
+                .HasDatabaseName("UX_PlanningApplication_Authority_Reference")
                 .HasFilter("[ApplicationReference] IS NOT NULL");
+
+            entity.HasIndex(item => new { item.PlanningAuthorityId, item.SourceKey })
+                .HasDatabaseName("IX_PlanningApplication_Authority_SourceKey")
+                .HasFilter("[SourceKey] IS NOT NULL");
+
+            entity.HasIndex(item => new { item.PlanningAuthorityId, item.ValidatedDate })
+                .HasDatabaseName("IX_PlanningApplication_Authority_ValidatedDate")
+                .HasFilter("[ValidatedDate] IS NOT NULL");
+
+            entity.HasIndex(item => new { item.PlanningAuthorityId, item.ReceivedDate })
+                .HasDatabaseName("IX_PlanningApplication_Authority_ReceivedDate")
+                .HasFilter("[ReceivedDate] IS NOT NULL");
+
+            entity.HasIndex(item => new { item.ScrapedAt, item.ApplicationReference, item.Id })
+                .HasDatabaseName("IX_PlanningApplication_ScrapedAt_Reference_Id")
+                .IsDescending(true, false, false);
 
             entity.HasOne(item => item.PlanningAuthority)
                 .WithMany(authority => authority.PlanningApplications)
@@ -120,6 +140,10 @@ public sealed class ApplicationDbContext(DbContextOptions<ApplicationDbContext> 
 
             entity.HasIndex(item => new { item.PlanningApplicationId, item.Url })
                 .IsUnique();
+
+            entity.HasIndex(item => new { item.PlanningApplicationId, item.PublishedDate })
+                .HasDatabaseName("IX_PlanningDocument_Application_PublishedDate")
+                .HasFilter("[PublishedDate] IS NOT NULL");
 
             entity.HasOne(item => item.PlanningApplication)
                 .WithMany(application => application.PlanningDocuments)

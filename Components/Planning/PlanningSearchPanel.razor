@@ -1,0 +1,127 @@
+<section class="planning-search">
+    <form class="planning-search-form" @onsubmit="SearchAsync" @onsubmit:preventDefault="true">
+        <label class="field-label">Keyword search criteria</label>
+        <div class="planning-search-criteria">
+            @for (var index = 0; index < Criteria.Count; index++)
+            {
+                var criterion = Criteria[index];
+                <div class="planning-search-row" @key="criterion">
+                    <div class="planning-search-input">
+                        <input id="@GetSearchCriterionInputId(index)"
+                               class="text-input"
+                               placeholder="@GetSearchCriterionPlaceholder(index)"
+                               aria-label="@GetSearchCriterionLabel(index)"
+                               @bind="criterion.Text"
+                               @bind:event="oninput" />
+                        <button class="icon-button search-settings-button"
+                                type="button"
+                                title="Search settings"
+                                aria-label="@GetSearchCriterionSettingsLabel(index)"
+                                aria-haspopup="dialog"
+                                @onclick="() => OpenSettingsAsync(criterion)">
+                            <span aria-hidden="true">&#9881;</span>
+                        </button>
+                    </div>
+                    @if (Criteria.Count > 1)
+                    {
+                        <button class="secondary-button" type="button" @onclick="() => RemoveCriterionAsync(criterion)" disabled="@IsSearching">
+                            Remove
+                        </button>
+                    }
+                </div>
+            }
+        </div>
+        <div class="planning-search-actions">
+            <button class="secondary-button" type="button" @onclick="OnAddCriterion" disabled="@IsSearching">
+                Add criterion
+            </button>
+            <button class="primary-button" type="submit" disabled="@IsSearching">
+                @SearchButtonLabel
+            </button>
+            @if (SearchHasRun)
+            {
+                <button class="secondary-button" type="button" @onclick="OnClear">
+                    Clear
+                </button>
+            }
+        </div>
+    </form>
+
+    @if (SearchHasRun && !IsSearching)
+    {
+        <p class="search-summary">
+            @SearchPaginationSummary for <strong>@LastSearchText</strong>
+        </p>
+    }
+</section>
+
+@code {
+    [Parameter]
+    public IList<PlanningSearchCriterionInput> Criteria { get; set; } = [];
+
+    [Parameter]
+    public bool IsSearching { get; set; }
+
+    [Parameter]
+    public bool SearchHasRun { get; set; }
+
+    [Parameter]
+    public string? LastSearchText { get; set; }
+
+    [Parameter]
+    public string SearchPaginationSummary { get; set; } = string.Empty;
+
+    [Parameter]
+    public EventCallback OnSearch { get; set; }
+
+    [Parameter]
+    public EventCallback OnAddCriterion { get; set; }
+
+    [Parameter]
+    public EventCallback<PlanningSearchCriterionInput> OnRemoveCriterion { get; set; }
+
+    [Parameter]
+    public EventCallback<PlanningSearchCriterionInput> OnOpenSettings { get; set; }
+
+    [Parameter]
+    public EventCallback OnClear { get; set; }
+
+    private string SearchButtonLabel => IsSearching ? "Searching..." : "Search";
+
+    private Task SearchAsync()
+    {
+        return OnSearch.InvokeAsync();
+    }
+
+    private Task RemoveCriterionAsync(PlanningSearchCriterionInput criterion)
+    {
+        return OnRemoveCriterion.InvokeAsync(criterion);
+    }
+
+    private Task OpenSettingsAsync(PlanningSearchCriterionInput criterion)
+    {
+        return OnOpenSettings.InvokeAsync(criterion);
+    }
+
+    private static string GetSearchCriterionInputId(int index)
+    {
+        return $"planning-keyword-{index}";
+    }
+
+    private static string GetSearchCriterionLabel(int index)
+    {
+        return $"Keyword search criterion {index + 1}";
+    }
+
+    private static string GetSearchCriterionSettingsLabel(int index)
+    {
+        return $"Open settings for keyword search criterion {index + 1}";
+    }
+
+    private static string GetSearchCriterionPlaceholder(int index)
+    {
+        return index == 0
+            ? "Search documents, headings, descriptions"
+            : "Additional keyword criteria";
+    }
+}

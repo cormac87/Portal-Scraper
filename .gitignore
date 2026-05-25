@@ -9,3 +9,5 @@ obj/
 *.jfm
 *.sqlproj.user
 *.dacpac
+ScraperLogs/
+Services/ScraperLogs/

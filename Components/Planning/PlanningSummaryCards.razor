@@ -1,0 +1,27 @@
+@using PortalScraper.Data
+
+<section class="planning-summary">
+    <article class="stat-card">
+        <span>Authorities</span>
+        <strong>@Authorities.Count(authority => !string.IsNullOrWhiteSpace(authority.Website))</strong>
+    </article>
+    <article class="stat-card">
+        <span>Applications</span>
+        <strong>@ApplicationTotalCount</strong>
+    </article>
+    <article class="stat-card">
+        <span>Documents</span>
+        <strong>@DocumentTotalCount</strong>
+    </article>
+</section>
+
+@code {
+    [Parameter]
+    public IReadOnlyList<PlanningAuthority> Authorities { get; set; } = [];
+
+    [Parameter]
+    public int ApplicationTotalCount { get; set; }
+
+    [Parameter]
+    public int DocumentTotalCount { get; set; }
+}
