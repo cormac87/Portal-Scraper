@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Net;
+using System.Net.Http.Headers;
 using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
@@ -34,8 +35,10 @@ public sealed class PlanningPortalScraper(
     IOptions<PlanningPortalScraperOptions> scraperOptions,
     ILogger<PlanningPortalScraper> logger) : IPlanningPortalScraper
 {
+    private const int TooManyRequestsRetryCount = 1;
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private static readonly Regex WhitespaceRegex = new(@"\s+", RegexOptions.Compiled);
+    private static readonly TimeSpan DefaultTooManyRequestsRetryDelay = TimeSpan.FromMinutes(1);
 
     public async Task<WeeklyScrapeResult> ScrapeWeeklyAsync(CancellationToken cancellationToken = default)
     {
@@ -354,15 +357,18 @@ public sealed class PlanningPortalScraper(
 
         logger.LogDebug("Navigating to planning authority homepage {BaseUri}", baseUri);
         authorityLog.WriteSummary($"Navigating to homepage: {baseUri}");
-        await page.GotoAsync(baseUri.ToString(), new PageGotoOptions
-        {
-            WaitUntil = WaitUntilState.DOMContentLoaded
-        });
+        await NavigateWithTooManyRequestsRetryAsync(
+            page,
+            baseUri.ToString(),
+            $"homepage for {authority.Name}",
+            logger,
+            authorityLog.WriteSummary,
+            cancellationToken);
         authorityLog.WriteSummary($"Homepage loaded: {page.Url}");
 
         logger.LogDebug("Opening weekly list for {PlanningAuthorityName}", authority.Name);
         authorityLog.WriteSummary("Opening weekly list.");
-        await OpenWeeklyListAsync(page, baseUri);
+        await OpenWeeklyListAsync(page, baseUri, logger, authority, authorityLog, cancellationToken);
         authorityLog.WriteSummary($"Weekly list page loaded: {page.Url}");
 
         // The portal preselects its latest week, so weekNumber 0 preserves the old behavior.
@@ -377,7 +383,7 @@ public sealed class PlanningPortalScraper(
                 $"Weekly list page did not contain the #week dropdown at {page.Url}; reopening weekly list once before failing.");
 
             await Task.Delay(1000, cancellationToken);
-            await OpenWeeklyListAsync(page, baseUri);
+            await OpenWeeklyListAsync(page, baseUri, logger, authority, authorityLog, cancellationToken);
             authorityLog.WriteSummary($"Weekly list page reloaded: {page.Url}");
             selectedWeekResult = await TrySelectWeekByNumberAsync(page, weekNumber);
         }
@@ -413,9 +419,9 @@ public sealed class PlanningPortalScraper(
 
         logger.LogDebug("Submitting weekly list search for {PlanningAuthorityName}", authority.Name);
         authorityLog.WriteSummary("Submitting weekly list search.");
-        await SubmitWeeklySearchAsync(page);
+        await SubmitWeeklySearchAsync(page, logger, authority, authorityLog, cancellationToken);
         authorityLog.WriteSummary($"Weekly list search submitted; results page: {page.Url}");
-        await TrySetResultsPerPageToMaximumAsync(page, logger, authority, authorityLog);
+        await TrySetResultsPerPageToMaximumAsync(page, logger, authority, authorityLog, cancellationToken);
 
         var resultLinks = await CollectResultLinksAsync(page, baseUri, logger, authority, authorityLog, cancellationToken);
 
@@ -621,7 +627,13 @@ public sealed class PlanningPortalScraper(
     }
 
 
-    private static async Task OpenWeeklyListAsync(IPage page, Uri baseUri)
+    private static async Task OpenWeeklyListAsync(
+        IPage page,
+        Uri baseUri,
+        ILogger logger,
+        PlanningAuthority authority,
+        AuthorityFileLog authorityLog,
+        CancellationToken cancellationToken)
     {
         var weeklyLink = page
             .Locator("a[href*='action=weeklyList'][href*='searchType=Application'], #planListSearch a")
@@ -633,29 +645,42 @@ public sealed class PlanningPortalScraper(
             if (!string.IsNullOrWhiteSpace(href))
             {
                 var weeklyUri = new Uri(baseUri, WebUtility.HtmlDecode(href));
-                await page.GotoAsync(weeklyUri.ToString(), new PageGotoOptions
-                {
-                    WaitUntil = WaitUntilState.DOMContentLoaded
-                });
+                await NavigateWithTooManyRequestsRetryAsync(
+                    page,
+                    weeklyUri.ToString(),
+                    $"weekly list for {authority.Name}",
+                    logger,
+                    authorityLog.WriteSummary,
+                    cancellationToken);
 
                 return;
             }
         }
 
         var weeklyListUri = new Uri(baseUri, "search.do?action=weeklyList&searchType=Application");
-        await page.GotoAsync(weeklyListUri.ToString(), new PageGotoOptions
-        {
-            WaitUntil = WaitUntilState.DOMContentLoaded
-        });
+        await NavigateWithTooManyRequestsRetryAsync(
+            page,
+            weeklyListUri.ToString(),
+            $"weekly list for {authority.Name}",
+            logger,
+            authorityLog.WriteSummary,
+            cancellationToken);
     }
 
-    private static async Task SubmitWeeklySearchAsync(IPage page)
+    private static async Task SubmitWeeklySearchAsync(
+        IPage page,
+        ILogger logger,
+        PlanningAuthority authority,
+        AuthorityFileLog authorityLog,
+        CancellationToken cancellationToken)
     {
-        await page.Locator("#weeklyListForm input[type='submit'], input[type='submit'][value='Search']")
-            .First
-            .ClickAsync();
-
-        await page.WaitForLoadStateAsync(LoadState.DOMContentLoaded);
+        await ClickAndWaitForLoadStateWithTooManyRequestsRetryAsync(
+            page,
+            page.Locator("#weeklyListForm input[type='submit'], input[type='submit'][value='Search']").First,
+            $"weekly search results for {authority.Name}",
+            logger,
+            authorityLog.WriteSummary,
+            cancellationToken);
     }
 
     private static async Task<WeeklyListSelectionResult> TrySelectWeekByNumberAsync(IPage page, int weekNumber)
@@ -792,7 +817,8 @@ public sealed class PlanningPortalScraper(
         IPage page,
         ILogger logger,
         PlanningAuthority authority,
-        AuthorityFileLog authorityLog)
+        AuthorityFileLog authorityLog,
+        CancellationToken cancellationToken)
     {
         var select = page.Locator("#resultsPerPage");
 
@@ -811,8 +837,13 @@ public sealed class PlanningPortalScraper(
             var submit = page.Locator("#searchResults input[type='submit'], #searchfilters input[type='submit']").First;
             if (await submit.CountAsync() > 0)
             {
-                await submit.ClickAsync();
-                await page.WaitForLoadStateAsync(LoadState.DOMContentLoaded);
+                await ClickAndWaitForLoadStateWithTooManyRequestsRetryAsync(
+                    page,
+                    submit,
+                    $"maximum-results search results for {authority.Name}",
+                    logger,
+                    authorityLog.WriteSummary,
+                    cancellationToken);
                 authorityLog.WriteSummary($"Results-per-page form submitted; page loaded: {page.Url}");
             }
         }
@@ -826,6 +857,174 @@ public sealed class PlanningPortalScraper(
             logger.LogDebug("No results per page selector found for {PlanningAuthorityName}", authority.Name);
             authorityLog.WriteSummary($"Could not select 100 results per page: {ex.Message}");
         }
+    }
+
+    private static async Task<IResponse?> NavigateWithTooManyRequestsRetryAsync(
+        IPage page,
+        string url,
+        string description,
+        ILogger logger,
+        Action<string>? writeLog,
+        CancellationToken cancellationToken)
+    {
+        for (var attempt = 0; ; attempt++)
+        {
+            var response = await page.GotoAsync(url, new PageGotoOptions
+            {
+                WaitUntil = WaitUntilState.DOMContentLoaded
+            });
+
+            if (!IsTooManyRequestsResponse(response))
+            {
+                return response;
+            }
+
+            if (attempt >= TooManyRequestsRetryCount)
+            {
+                throw CreateTooManyRequestsException(response!, description);
+            }
+
+            await WaitBeforeTooManyRequestsRetryAsync(response!, description, attempt, logger, writeLog, cancellationToken);
+        }
+    }
+
+    private static async Task ClickAndWaitForLoadStateWithTooManyRequestsRetryAsync(
+        IPage page,
+        ILocator locator,
+        string description,
+        ILogger logger,
+        Action<string>? writeLog,
+        CancellationToken cancellationToken)
+    {
+        IResponse? tooManyRequestsResponse = null;
+
+        void OnResponse(object? _, IResponse response)
+        {
+            if (IsTooManyRequestsResponse(response)
+                && response.Frame == page.MainFrame
+                && response.Request.ResourceType.Equals("document", StringComparison.OrdinalIgnoreCase))
+            {
+                tooManyRequestsResponse = response;
+            }
+        }
+
+        page.Response += OnResponse;
+        try
+        {
+            await locator.ClickAsync();
+            await page.WaitForLoadStateAsync(LoadState.DOMContentLoaded);
+        }
+        finally
+        {
+            page.Response -= OnResponse;
+        }
+
+        if (tooManyRequestsResponse is not null)
+        {
+            await ReloadAfterTooManyRequestsAsync(
+                page,
+                tooManyRequestsResponse,
+                description,
+                logger,
+                writeLog,
+                cancellationToken);
+        }
+    }
+
+    private static async Task ReloadAfterTooManyRequestsAsync(
+        IPage page,
+        IResponse response,
+        string description,
+        ILogger logger,
+        Action<string>? writeLog,
+        CancellationToken cancellationToken)
+    {
+        IResponse? currentResponse = response;
+
+        for (var attempt = 0; ; attempt++)
+        {
+            if (attempt >= TooManyRequestsRetryCount)
+            {
+                throw CreateTooManyRequestsException(currentResponse!, description);
+            }
+
+            await WaitBeforeTooManyRequestsRetryAsync(currentResponse!, description, attempt, logger, writeLog, cancellationToken);
+
+            currentResponse = await page.ReloadAsync(new PageReloadOptions
+            {
+                WaitUntil = WaitUntilState.DOMContentLoaded
+            });
+
+            if (!IsTooManyRequestsResponse(currentResponse))
+            {
+                return;
+            }
+        }
+    }
+
+    private static bool IsTooManyRequestsResponse(IResponse? response)
+    {
+        return response?.Status == (int)HttpStatusCode.TooManyRequests;
+    }
+
+    private static async Task WaitBeforeTooManyRequestsRetryAsync(
+        IResponse response,
+        string description,
+        int attempt,
+        ILogger logger,
+        Action<string>? writeLog,
+        CancellationToken cancellationToken)
+    {
+        var retryDelay = await GetTooManyRequestsRetryDelayAsync(response);
+
+        logger.LogWarning(
+            "Planning portal navigation was rate limited with HTTP 429 for {NavigationDescription} at {NavigationUrl}. Waiting {RetryDelaySeconds} seconds before retry {RetryAttempt}/{RetryCount}",
+            description,
+            response.Url,
+            retryDelay.TotalSeconds,
+            attempt + 1,
+            TooManyRequestsRetryCount);
+        writeLog?.Invoke(
+            $"HTTP 429 rate limit while loading {description} at {response.Url}. Waiting {retryDelay.TotalSeconds:N0} seconds before retry {attempt + 1}/{TooManyRequestsRetryCount}.");
+
+        await Task.Delay(retryDelay, cancellationToken);
+    }
+
+    private static async Task<TimeSpan> GetTooManyRequestsRetryDelayAsync(IResponse response)
+    {
+        var retryAfter = await response.HeaderValueAsync("retry-after");
+        return GetTooManyRequestsRetryDelay(retryAfter);
+    }
+
+    private static TimeSpan GetTooManyRequestsRetryDelay(string? retryAfter)
+    {
+        if (!string.IsNullOrWhiteSpace(retryAfter)
+            && RetryConditionHeaderValue.TryParse(retryAfter, out var retryAfterHeader))
+        {
+            if (retryAfterHeader.Delta is { } delta && delta > TimeSpan.Zero)
+            {
+                return delta;
+            }
+
+            if (retryAfterHeader.Date is { } retryDate)
+            {
+                var delay = retryDate - DateTimeOffset.UtcNow;
+                if (delay > TimeSpan.Zero)
+                {
+                    return delay;
+                }
+            }
+        }
+
+        return DefaultTooManyRequestsRetryDelay;
+    }
+
+    private static InvalidOperationException CreateTooManyRequestsException(
+        IResponse response,
+        string description)
+    {
+        return new InvalidOperationException(
+            $"Planning portal navigation was rate limited with HTTP 429 for {description} at {response.Url} after {TooManyRequestsRetryCount} retry.");
     }
 
     private static async Task<List<SearchResultDto>> CollectResultLinksAsync(
@@ -872,10 +1071,13 @@ public sealed class PlanningPortalScraper(
             }
 
             authorityLog.WriteSummary($"Opening next search results page: {nextUrl}");
-            await page.GotoAsync(nextUrl, new PageGotoOptions
-            {
-                WaitUntil = WaitUntilState.DOMContentLoaded
-            });
+            await NavigateWithTooManyRequestsRetryAsync(
+                page,
+                nextUrl,
+                $"next search results page for {authority.Name}",
+                logger,
+                authorityLog.WriteSummary,
+                cancellationToken);
         }
 
         return results
@@ -926,10 +1128,13 @@ public sealed class PlanningPortalScraper(
         logger.LogDebug("Opening summary tab for planning application {ApplicationUrl}", applicationUrl);
         applicationLog.WriteSection("Summary Tab");
         applicationLog.WriteKeyValue("Navigating to", summaryUrl);
-        await page.GotoAsync(summaryUrl, new PageGotoOptions
-        {
-            WaitUntil = WaitUntilState.DOMContentLoaded
-        });
+        await NavigateWithTooManyRequestsRetryAsync(
+            page,
+            summaryUrl,
+            $"summary tab for planning application {FirstNonEmpty(resultLink.Title, sourceKey, applicationUrl)}",
+            logger,
+            applicationLog.WriteLine,
+            cancellationToken);
         applicationLog.WriteKeyValue("Loaded URL", page.Url);
 
         var details = await ExtractDetailsAsync(page);
@@ -962,10 +1167,13 @@ public sealed class PlanningPortalScraper(
         var contactsUrl = BuildApplicationTabUrl(applicationUrl, "contacts");
         applicationLog.WriteSection("Contacts Tab");
         applicationLog.WriteKeyValue("Navigating to", contactsUrl);
-        await page.GotoAsync(contactsUrl, new PageGotoOptions
-        {
-            WaitUntil = WaitUntilState.DOMContentLoaded
-        });
+        await NavigateWithTooManyRequestsRetryAsync(
+            page,
+            contactsUrl,
+            $"contacts tab for planning application {application.ApplicationReference ?? application.SourceKey ?? applicationUrl}",
+            logger,
+            applicationLog.WriteLine,
+            cancellationToken);
         applicationLog.WriteKeyValue("Loaded URL", page.Url);
         var contacts = await ExtractContactsAsync(page);
         applicationLog.WriteContacts(contacts);
@@ -982,10 +1190,13 @@ public sealed class PlanningPortalScraper(
         var detailsUrl = BuildApplicationTabUrl(applicationUrl, "details");
         applicationLog.WriteSection("Details Tab");
         applicationLog.WriteKeyValue("Navigating to", detailsUrl);
-        await page.GotoAsync(detailsUrl, new PageGotoOptions
-        {
-            WaitUntil = WaitUntilState.DOMContentLoaded
-        });
+        await NavigateWithTooManyRequestsRetryAsync(
+            page,
+            detailsUrl,
+            $"details tab for planning application {application.ApplicationReference ?? application.SourceKey ?? applicationUrl}",
+            logger,
+            applicationLog.WriteLine,
+            cancellationToken);
         applicationLog.WriteKeyValue("Loaded URL", page.Url);
         var furtherInformation = await ExtractFurtherInformationAsync(page);
         applicationLog.WriteDictionary("Further Information Fields", furtherInformation.Fields);
@@ -996,10 +1207,13 @@ public sealed class PlanningPortalScraper(
         var documentsUrl = BuildApplicationTabUrl(applicationUrl, "documents");
         applicationLog.WriteSection("Documents Tab");
         applicationLog.WriteKeyValue("Navigating to", documentsUrl);
-        await page.GotoAsync(documentsUrl, new PageGotoOptions
-        {
-            WaitUntil = WaitUntilState.DOMContentLoaded
-        });
+        await NavigateWithTooManyRequestsRetryAsync(
+            page,
+            documentsUrl,
+            $"documents tab for planning application {application.ApplicationReference ?? application.SourceKey ?? applicationUrl}",
+            logger,
+            applicationLog.WriteLine,
+            cancellationToken);
         applicationLog.WriteKeyValue("Loaded URL", page.Url);
         var documents = await ExtractDocumentsAsync(page);
         applicationLog.WriteLine($"Found {documents.Count} document rows.");
