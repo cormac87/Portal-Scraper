@@ -19,6 +19,8 @@ public sealed class PlanningDocumentContentService(
     ILogger<PlanningDocumentContentService> logger) : IPlanningDocumentContentService
 {
     private const int MaxDownloadBytes = 40 * 1024 * 1024;
+    private const int TooManyRequestsRetryCount = 1;
+    private static readonly TimeSpan DefaultTooManyRequestsRetryDelay = TimeSpan.FromMinutes(1);
 
     public async Task<PlanningDocumentTextExtractionResult> ExtractAsync(
         string url,
@@ -33,7 +35,7 @@ public sealed class PlanningDocumentContentService(
         try
         {
             logger.LogDebug("Downloading planning document {DocumentUrl}", url);
-            document = await DownloadAsync(url, browserContext, cancellationToken);
+            document = await DownloadAsync(url, browserContext, logger, cancellationToken);
             logger.LogInformation(
                 "Downloaded planning document {DocumentFileName} from {DocumentUrl}. ContentType={ContentType}, SizeBytes={SizeBytes}",
                 document.FileName,
@@ -124,6 +126,7 @@ public sealed class PlanningDocumentContentService(
     private static async Task<DownloadedPlanningDocument> DownloadAsync(
         string url,
         IBrowserContext browserContext,
+        ILogger logger,
         CancellationToken cancellationToken)
     {
         var uri = new Uri(url, UriKind.Absolute);
@@ -139,39 +142,76 @@ public sealed class PlanningDocumentContentService(
         {
             Timeout = TimeSpan.FromSeconds(90)
         };
-        using var request = new HttpRequestMessage(HttpMethod.Get, uri);
-        request.Headers.UserAgent.ParseAdd("Mozilla/5.0 PortalScraper/1.0");
-
-        using var response = await httpClient.SendAsync(
-            request,
-            HttpCompletionOption.ResponseHeadersRead,
-            cancellationToken);
-
-        response.EnsureSuccessStatusCode();
-
-        var contentLength = response.Content.Headers.ContentLength;
-        if (contentLength > MaxDownloadBytes)
+        for (var attempt = 0; ; attempt++)
         {
-            throw new InvalidOperationException($"Document is too large to parse ({contentLength.Value:N0} bytes).");
+            using var request = new HttpRequestMessage(HttpMethod.Get, uri);
+            request.Headers.UserAgent.ParseAdd("Mozilla/5.0 PortalScraper/1.0");
+
+            using var response = await httpClient.SendAsync(
+                request,
+                HttpCompletionOption.ResponseHeadersRead,
+                cancellationToken);
+
+            if (response.StatusCode == HttpStatusCode.TooManyRequests
+                && attempt < TooManyRequestsRetryCount)
+            {
+                var retryDelay = GetTooManyRequestsRetryDelay(response.Headers.RetryAfter);
+                logger.LogWarning(
+                    "Planning document download was rate limited with HTTP 429 for {DocumentUrl}. Waiting {RetryDelaySeconds} seconds before retry {RetryAttempt}/{RetryCount}",
+                    uri,
+                    retryDelay.TotalSeconds,
+                    attempt + 1,
+                    TooManyRequestsRetryCount);
+
+                await Task.Delay(retryDelay, cancellationToken);
+                continue;
+            }
+
+            response.EnsureSuccessStatusCode();
+
+            var contentLength = response.Content.Headers.ContentLength;
+            if (contentLength > MaxDownloadBytes)
+            {
+                throw new InvalidOperationException($"Document is too large to parse ({contentLength.Value:N0} bytes).");
+            }
+
+            await using var responseStream = await response.Content.ReadAsStreamAsync(cancellationToken);
+            using var memoryStream = new MemoryStream();
+            await responseStream.CopyToAsync(memoryStream, cancellationToken);
+
+            if (memoryStream.Length > MaxDownloadBytes)
+            {
+                throw new InvalidOperationException($"Document is too large to parse ({memoryStream.Length:N0} bytes).");
+            }
+
+            var fileName = GetFileName(response.Content.Headers.ContentDisposition, uri);
+            var contentType = response.Content.Headers.ContentType?.MediaType;
+
+            return new DownloadedPlanningDocument(
+                uri.ToString(),
+                fileName,
+                contentType,
+                memoryStream.ToArray());
+        }
+    }
+
+    private static TimeSpan GetTooManyRequestsRetryDelay(RetryConditionHeaderValue? retryAfter)
+    {
+        if (retryAfter?.Delta is { } delta && delta > TimeSpan.Zero)
+        {
+            return delta;
         }
 
-        await using var responseStream = await response.Content.ReadAsStreamAsync(cancellationToken);
-        using var memoryStream = new MemoryStream();
-        await responseStream.CopyToAsync(memoryStream, cancellationToken);
-
-        if (memoryStream.Length > MaxDownloadBytes)
+        if (retryAfter?.Date is { } retryDate)
         {
-            throw new InvalidOperationException($"Document is too large to parse ({memoryStream.Length:N0} bytes).");
+            var delay = retryDate - DateTimeOffset.UtcNow;
+            if (delay > TimeSpan.Zero)
+            {
+                return delay;
+            }
         }
 
-        var fileName = GetFileName(response.Content.Headers.ContentDisposition, uri);
-        var contentType = response.Content.Headers.ContentType?.MediaType;
-
-        return new DownloadedPlanningDocument(
-            uri.ToString(),
-            fileName,
-            contentType,
-            memoryStream.ToArray());
+        return DefaultTooManyRequestsRetryDelay;
     }
 
     private static async Task<CookieContainer> BuildCookieContainerAsync(

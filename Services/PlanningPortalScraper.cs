@@ -64,7 +64,7 @@ public sealed class PlanningPortalScraper(
         await using var db = await dbFactory.CreateDbContextAsync(cancellationToken);
         var authorities = await db.PlanningAuthorities
             .AsNoTracking()
-            .Where(authority => authority.Website != null && authority.Website != "")
+            .Where(authority => authority.Website != null && authority.Website != "" && authority.Name.Contains("Westminster"))
             .OrderBy(authority => authority.Name)
             .ToListAsync(cancellationToken);
 
@@ -95,80 +95,139 @@ public sealed class PlanningPortalScraper(
             browserRestartDelay,
             cancellationToken);
 
-        foreach (var authority in authorities)
+        var exhaustedAuthorityIds = new HashSet<Guid>();
+        for (var weekNumber = 0; ; weekNumber++)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var authorityTimer = Stopwatch.StartNew();
-            var authorityStartedAt = DateTime.UtcNow;
-            var authorityLog = fileLog.CreateAuthorityLog(authority);
-            authorityLog.StartRun(authority, authorityStartedAt);
 
-            try
+            var authoritiesRemaining = authorities.Count - exhaustedAuthorityIds.Count;
+            if (authoritiesRemaining == 0)
             {
-                logger.LogInformation(
-                    "Starting weekly planning scrape for {PlanningAuthorityName} ({PlanningAuthorityId}) at {PlanningAuthorityWebsite}",
-                    authority.Name,
-                    authority.Id,
-                    authority.Website);
-                authorityLog.WriteSummary("Starting weekly planning scrape.");
+                logger.LogInformation("Stopping weekly planning import scrape because every planning authority has run out of weekly dropdown options");
+                fileLog.WriteRunSummary("Stopping weekly planning import scrape because every planning authority has run out of weekly dropdown options.");
+                break;
+            }
 
-                var authorityScrapeResult = await ScrapeAuthorityWithBrowserRecoveryAsync(
-                    browserSession,
-                    authority,
-                    authorityLog,
-                    messages,
-                    browserFailureRetryCount,
-                    browserRestartDelay,
-                    cancellationToken);
-                authoritiesProcessed++;
-                var scrapedApplications = authorityScrapeResult.Applications;
-                applicationsScraped += scrapedApplications.Count;
-                var authorityDocumentsScraped = scrapedApplications.Sum(application => application.Documents.Count);
-                documentsScraped += authorityDocumentsScraped;
+            logger.LogInformation(
+                "Starting weekly planning scrape pass for dropdown weekNumber {WeekNumber}; {AuthorityCount} authorities still have possible weeks",
+                weekNumber,
+                authoritiesRemaining);
+            fileLog.WriteRunSummary(
+                $"Starting weekly planning scrape pass for dropdown weekNumber {weekNumber}; authorities still with possible weeks={authoritiesRemaining}.");
 
-                if (authorityScrapeResult.Skipped)
+            var authoritiesWithSelectedWeek = 0;
+            foreach (var authority in authorities)
+            {
+                if (exhaustedAuthorityIds.Contains(authority.Id))
                 {
-                    logger.LogInformation(
-                        "Skipped {PlanningAuthorityName} because the selected weekly list returned no new applications to scrape",
-                        authority.Name);
-                    authorityLog.WriteSummary($"Skipped after {authorityTimer.ElapsedMilliseconds} ms because the selected weekly list returned no new applications to scrape.");
                     continue;
                 }
 
-                logger.LogInformation(
-                    "Scraped {ApplicationCount} applications and {DocumentCount} documents for {PlanningAuthorityName}; importing to database",
-                    scrapedApplications.Count,
-                    authorityDocumentsScraped,
-                    authority.Name);
-                authorityLog.WriteSummary($"Scraped {scrapedApplications.Count} applications and {authorityDocumentsScraped} documents; importing to database.");
+                cancellationToken.ThrowIfCancellationRequested();
+                var authorityTimer = Stopwatch.StartNew();
+                var authorityStartedAt = DateTime.UtcNow;
+                var authorityLog = fileLog.CreateAuthorityLog(authority);
+                authorityLog.StartRun(authority, authorityStartedAt);
 
-                var saveResult = await SaveApplicationsAsync(authority.Id, scrapedApplications, cancellationToken);
-                applicationsSaved += saveResult.ApplicationsSaved;
-                documentsSaved += saveResult.DocumentsSaved;
-                authorityLog.WriteSummary($"Database import finished: applications saved={saveResult.ApplicationsSaved}, documents saved={saveResult.DocumentsSaved}.");
+                try
+                {
+                    logger.LogInformation(
+                        "Starting weekly planning scrape for {PlanningAuthorityName} ({PlanningAuthorityId}) at {PlanningAuthorityWebsite} using dropdown weekNumber {WeekNumber}",
+                        authority.Name,
+                        authority.Id,
+                        authority.Website,
+                        weekNumber);
+                    authorityLog.WriteSummary($"Starting weekly planning scrape for dropdown weekNumber {weekNumber}.");
 
-                logger.LogInformation(
-                    "Finished {PlanningAuthorityName}: imported {ApplicationsSaved} applications and {DocumentsSaved} new documents in {ElapsedMilliseconds} ms",
-                    authority.Name,
-                    saveResult.ApplicationsSaved,
-                    saveResult.DocumentsSaved,
-                    authorityTimer.ElapsedMilliseconds);
-                authorityLog.WriteSummary($"Finished authority scrape in {authorityTimer.ElapsedMilliseconds} ms.");
+                    var authorityScrapeResult = await ScrapeAuthorityWithBrowserRecoveryAsync(
+                        browserSession,
+                        authority,
+                        authorityLog,
+                        messages,
+                        weekNumber,
+                        browserFailureRetryCount,
+                        browserRestartDelay,
+                        cancellationToken);
 
-                messages.Add(
-                    $"{authority.Name}: scraped {scrapedApplications.Count} applications and {authorityDocumentsScraped} documents.");
+                    if (authorityScrapeResult.WeekUnavailable)
+                    {
+                        exhaustedAuthorityIds.Add(authority.Id);
+                        logger.LogInformation(
+                            "Skipped {PlanningAuthorityName} because the weekly dropdown does not contain weekNumber {WeekNumber}",
+                            authority.Name,
+                            weekNumber);
+                        authorityLog.WriteSummary(
+                            $"Skipped after {authorityTimer.ElapsedMilliseconds} ms because the weekly dropdown does not contain weekNumber {weekNumber}.");
+                        continue;
+                    }
+
+                    authoritiesWithSelectedWeek++;
+                    authoritiesProcessed++;
+                    var selectedWeekDescription = DescribeWeeklySelection(authorityScrapeResult.SelectedWeek, weekNumber);
+                    var scrapedApplications = authorityScrapeResult.Applications;
+                    applicationsScraped += scrapedApplications.Count;
+                    var authorityDocumentsScraped = scrapedApplications.Sum(application => application.Documents.Count);
+                    documentsScraped += authorityDocumentsScraped;
+
+                    if (authorityScrapeResult.Skipped)
+                    {
+                        logger.LogInformation(
+                            "Skipped {PlanningAuthorityName} because {SelectedWeek} returned no new applications to scrape",
+                            authority.Name,
+                            selectedWeekDescription);
+                        authorityLog.WriteSummary(
+                            $"Skipped after {authorityTimer.ElapsedMilliseconds} ms because {selectedWeekDescription} returned no new applications to scrape.");
+                        continue;
+                    }
+
+                    logger.LogInformation(
+                        "Scraped {ApplicationCount} applications and {DocumentCount} documents for {PlanningAuthorityName} from {SelectedWeek}; importing to database",
+                        scrapedApplications.Count,
+                        authorityDocumentsScraped,
+                        authority.Name,
+                        selectedWeekDescription);
+                    authorityLog.WriteSummary(
+                        $"Scraped {scrapedApplications.Count} applications and {authorityDocumentsScraped} documents from {selectedWeekDescription}; importing to database.");
+
+                    var saveResult = await SaveApplicationsAsync(authority.Id, scrapedApplications, cancellationToken);
+                    applicationsSaved += saveResult.ApplicationsSaved;
+                    documentsSaved += saveResult.DocumentsSaved;
+                    authorityLog.WriteSummary($"Database import finished: applications saved={saveResult.ApplicationsSaved}, documents saved={saveResult.DocumentsSaved}.");
+
+                    logger.LogInformation(
+                        "Finished {PlanningAuthorityName}: imported {ApplicationsSaved} applications and {DocumentsSaved} new documents in {ElapsedMilliseconds} ms",
+                        authority.Name,
+                        saveResult.ApplicationsSaved,
+                        saveResult.DocumentsSaved,
+                        authorityTimer.ElapsedMilliseconds);
+                    authorityLog.WriteSummary($"Finished authority scrape in {authorityTimer.ElapsedMilliseconds} ms.");
+
+                    messages.Add(
+                        $"{authority.Name}: {selectedWeekDescription} scraped {scrapedApplications.Count} applications and {authorityDocumentsScraped} documents.");
+                }
+                catch (Exception ex)
+                {
+                    logger.LogError(
+                        ex,
+                        "Failed to scrape planning authority {PlanningAuthorityName} ({PlanningAuthorityId}) for dropdown weekNumber {WeekNumber} after {ElapsedMilliseconds} ms",
+                        authority.Name,
+                        authority.Id,
+                        weekNumber,
+                        authorityTimer.ElapsedMilliseconds);
+                    authorityLog.WriteSummary($"FAILED after {authorityTimer.ElapsedMilliseconds} ms for dropdown weekNumber {weekNumber}: {ex.GetType().Name}: {ex.Message}");
+                    authorityLog.WriteExceptionSummary(ex);
+                    messages.Add($"{authority.Name}: scrape failed for weekNumber {weekNumber} - {ex.Message}");
+                }
             }
-            catch (Exception ex)
+
+            if (authoritiesWithSelectedWeek == 0)
             {
-                logger.LogError(
-                    ex,
-                    "Failed to scrape planning authority {PlanningAuthorityName} ({PlanningAuthorityId}) after {ElapsedMilliseconds} ms",
-                    authority.Name,
-                    authority.Id,
-                    authorityTimer.ElapsedMilliseconds);
-                authorityLog.WriteSummary($"FAILED after {authorityTimer.ElapsedMilliseconds} ms: {ex.GetType().Name}: {ex.Message}");
-                authorityLog.WriteExceptionSummary(ex);
-                messages.Add($"{authority.Name}: scrape failed - {ex.Message}");
+                logger.LogInformation(
+                    "Stopping weekly planning import scrape because no planning authority selected dropdown weekNumber {WeekNumber}",
+                    weekNumber);
+                fileLog.WriteRunSummary(
+                    $"Stopping weekly planning import scrape because no planning authority selected dropdown weekNumber {weekNumber}.");
+                break;
             }
         }
 
@@ -240,6 +299,7 @@ public sealed class PlanningPortalScraper(
         PlanningAuthority authority,
         AuthorityFileLog authorityLog,
         List<string> messages,
+        int weekNumber,
         int retryCount,
         TimeSpan restartDelay,
         CancellationToken cancellationToken)
@@ -248,7 +308,7 @@ public sealed class PlanningPortalScraper(
         {
             try
             {
-                return await ScrapeAuthorityAsync(browserSession.Browser, authority, authorityLog, messages, cancellationToken);
+                return await ScrapeAuthorityAsync(browserSession.Browser, authority, authorityLog, messages, weekNumber, cancellationToken);
             }
             catch (Exception ex) when (IsRestartableBrowserFailure(ex) && attempt < retryCount)
             {
@@ -274,6 +334,7 @@ public sealed class PlanningPortalScraper(
         PlanningAuthority authority,
         AuthorityFileLog authorityLog,
         List<string> messages,
+        int weekNumber,
         CancellationToken cancellationToken)
     {
         var baseUri = NormalizeBaseUri(authority.Website!);
@@ -304,16 +365,51 @@ public sealed class PlanningPortalScraper(
         await OpenWeeklyListAsync(page, baseUri);
         authorityLog.WriteSummary($"Weekly list page loaded: {page.Url}");
 
-        var selectedWeek = await TryGetSelectedWeekAsync(page);
+        // The portal preselects its latest week, so weekNumber 0 preserves the old behavior.
+        var selectedWeekResult = await TrySelectWeekByNumberAsync(page, weekNumber);
+        if (!selectedWeekResult.WeekSelectFound)
+        {
+            logger.LogWarning(
+                "{PlanningAuthorityName}: weekly list page did not contain the #week dropdown at {WeeklyListUrl}; reopening weekly list once",
+                authority.Name,
+                page.Url);
+            authorityLog.WriteSummary(
+                $"Weekly list page did not contain the #week dropdown at {page.Url}; reopening weekly list once before failing.");
+
+            await Task.Delay(1000, cancellationToken);
+            await OpenWeeklyListAsync(page, baseUri);
+            authorityLog.WriteSummary($"Weekly list page reloaded: {page.Url}");
+            selectedWeekResult = await TrySelectWeekByNumberAsync(page, weekNumber);
+        }
+
+        if (!selectedWeekResult.WeekSelectFound)
+        {
+            logger.LogWarning(
+                "{PlanningAuthorityName}: weekly list page did not contain the #week dropdown at {WeeklyListUrl}",
+                authority.Name,
+                page.Url);
+            authorityLog.WriteSummary(
+                $"Weekly list page did not contain the #week dropdown at {page.Url}; treating this as a page-load failure rather than the end of the weekly dropdown.");
+
+            throw new InvalidOperationException($"Weekly list page did not contain the #week dropdown at {page.Url}.");
+        }
+
+        var selectedWeek = selectedWeekResult.SelectedWeek;
         if (selectedWeek is null)
         {
-            authorityLog.WriteSummary("Selected weekly list could not be read from the page.");
-        }
-        else
-        {
+            logger.LogInformation(
+                "{PlanningAuthorityName}: weekly dropdown has {OptionCount} options and no option for weekNumber {WeekNumber}",
+                authority.Name,
+                selectedWeekResult.OptionCount,
+                weekNumber);
             authorityLog.WriteSummary(
-                $"Selected weekly list: {selectedWeek.Label} (value={selectedWeek.Value}, week start={selectedWeek.WeekStart:yyyy-MM-dd}).");
+                $"Weekly dropdown has {selectedWeekResult.OptionCount} options and no option for weekNumber {weekNumber}; skipping authority for this pass.");
+            messages.Add($"{authority.Name}: weekly dropdown has no option for weekNumber {weekNumber}.");
+
+            return new AuthorityScrapeResult(applications, Skipped: true, WeekUnavailable: true, SelectedWeek: null);
         }
+
+        authorityLog.WriteSummary($"Selected weekly list: {DescribeWeeklySelection(selectedWeek, weekNumber)}.");
 
         logger.LogDebug("Submitting weekly list search for {PlanningAuthorityName}", authority.Name);
         authorityLog.WriteSummary("Submitting weekly list search.");
@@ -349,12 +445,13 @@ public sealed class PlanningPortalScraper(
         if (resultLinks.Count == 0)
         {
             logger.LogInformation(
-                "{PlanningAuthorityName}: default weekly list returned no new applications", // TODO log the week when the week is not always just the latest
-                authority.Name);
-            authorityLog.WriteSummary("Default weekly list returned no new applications.");
-            messages.Add($"{authority.Name}: default weekly list returned no new applications");
+                "{PlanningAuthorityName}: {SelectedWeek} returned no new applications",
+                authority.Name,
+                DescribeWeeklySelection(selectedWeek, weekNumber));
+            authorityLog.WriteSummary($"{DescribeWeeklySelection(selectedWeek, weekNumber)} returned no new applications.");
+            messages.Add($"{authority.Name}: {DescribeWeeklySelection(selectedWeek, weekNumber)} returned no new applications");
 
-            return new AuthorityScrapeResult(applications, Skipped: true);
+            return new AuthorityScrapeResult(applications, Skipped: true, WeekUnavailable: false, SelectedWeek: selectedWeek);
         }
 
         for (var index = 0; index < resultLinks.Count; index++)
@@ -413,7 +510,7 @@ public sealed class PlanningPortalScraper(
             }
         }
 
-        return new AuthorityScrapeResult(applications, Skipped: false);
+        return new AuthorityScrapeResult(applications, Skipped: false, WeekUnavailable: false, SelectedWeek: selectedWeek);
     }
 
     private async Task<PreviouslyScrapedFilterResult> FilterPreviouslyScrapedApplicationsAsync(
@@ -561,33 +658,86 @@ public sealed class PlanningPortalScraper(
         await page.WaitForLoadStateAsync(LoadState.DOMContentLoaded);
     }
 
-    private static async Task<WeeklyListSelection?> TryGetSelectedWeekAsync(IPage page)
+    private static async Task<WeeklyListSelectionResult> TrySelectWeekByNumberAsync(IPage page, int weekNumber)
     {
-        var weekSelect = page.Locator("#week");
-        if (await weekSelect.CountAsync() == 0)
+        var weekSelect = page.Locator("#week").First;
+
+        try
         {
-            return null;
+            await weekSelect.WaitForAsync(new LocatorWaitForOptions
+            {
+                State = WaitForSelectorState.Attached,
+                Timeout = 5000
+            });
+        }
+        catch (TimeoutException)
+        {
+            return new WeeklyListSelectionResult(false, 0, null);
         }
 
         var json = await weekSelect.EvaluateAsync<string>(
             """
-            select => {
-                const selectedOption = select.selectedOptions && select.selectedOptions.length > 0
-                    ? select.selectedOptions[0]
-                    : null;
+            (select, weekNumber) => {
+                const options = Array.from(select.options || []);
+                const targetIndex = Number(weekNumber);
+
+                if (!Number.isInteger(targetIndex) || targetIndex < 0 || targetIndex >= options.length) {
+                    return JSON.stringify({
+                        found: false,
+                        optionCount: options.length,
+                        targetIndex
+                    });
+                }
+
+                const selectedOption = options[targetIndex];
+                select.selectedIndex = targetIndex;
+                selectedOption.selected = true;
+                select.dispatchEvent(new Event('input', { bubbles: true }));
+                select.dispatchEvent(new Event('change', { bubbles: true }));
 
                 return JSON.stringify({
-                    value: select.value || '',
-                    label: selectedOption?.textContent || ''
+                    found: true,
+                    optionCount: options.length,
+                    targetIndex,
+                    value: select.value || selectedOption.value || '',
+                    label: selectedOption.textContent || ''
                 });
             }
-            """);
-        var selectedWeek = JsonSerializer.Deserialize<SelectedWeekDto>(json, JsonOptions);
-        var weekStart = TryParseWeekStart(selectedWeek?.Value, selectedWeek?.Label);
+            """,
+            weekNumber);
+        var selectedWeekDto = JsonSerializer.Deserialize<SelectedWeekDto>(json, JsonOptions);
+        if (selectedWeekDto is not { Found: true })
+        {
+            return new WeeklyListSelectionResult(
+                true,
+                selectedWeekDto?.OptionCount ?? 0,
+                null);
+        }
 
-        return weekStart is null
-            ? null
-            : new WeeklyListSelection(selectedWeek?.Value ?? string.Empty, selectedWeek?.Label ?? string.Empty, weekStart.Value);
+        var weekStart = TryParseWeekStart(selectedWeekDto.Value, selectedWeekDto.Label);
+
+        return new WeeklyListSelectionResult(
+            true,
+            selectedWeekDto.OptionCount,
+            new WeeklyListSelection(
+                selectedWeekDto.TargetIndex,
+                selectedWeekDto.Value,
+                selectedWeekDto.Label,
+                weekStart));
+    }
+
+    private static string DescribeWeeklySelection(WeeklyListSelection? selectedWeek, int weekNumber)
+    {
+        if (selectedWeek is null)
+        {
+            return $"weekNumber {weekNumber}";
+        }
+
+        var label = NormalizeText(selectedWeek.Label) ?? "(no label)";
+        var value = NormalizeText(selectedWeek.Value) ?? "(empty value)";
+        var weekStart = selectedWeek.WeekStart?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) ?? "unknown";
+
+        return $"weekNumber {weekNumber}, dropdown index {selectedWeek.DropdownIndex}: {label} (value={value}, week start={weekStart})";
     }
 
     private static DateTime? TryParseWeekStart(params string?[] values)
@@ -995,22 +1145,49 @@ public sealed class PlanningPortalScraper(
 
         var json = await page.Locator("#Documents tr").EvaluateAllAsync<string>(
             """
-            rows => JSON.stringify(rows.slice(1).map(row => {
+            rows => {
                 const clean = value => (value || '').replace(/\s+/g, ' ').trim();
-                const cells = Array.from(row.querySelectorAll('td'));
-                const viewLink = row.querySelector('a[title*="View"], a.recaptcha-link[href]');
+                const normalizeHeading = value => clean(value).toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+                const rowCells = row => Array.from(row.cells || row.querySelectorAll('th, td'));
+                const expectedHeadings = ['date published', 'document type', 'description'];
+                const headingMatches = (actual, expected) => actual === expected || actual.includes(expected);
+                const headerRow = rows.find(row => {
+                    const headings = rowCells(row).map(cell => normalizeHeading(cell.textContent));
+                    return expectedHeadings.every(heading => headings.some(actual => headingMatches(actual, heading)));
+                });
 
-                if (cells.length < 6 || !viewLink) {
-                    return null;
+                if (!headerRow) {
+                    return JSON.stringify([]);
                 }
 
-                return {
-                    publishedDate: clean(cells[1]?.textContent),
-                    documentType: clean(cells[2]?.textContent),
-                    description: clean(cells[4]?.textContent),
-                    url: viewLink.href || viewLink.getAttribute('href') || ''
+                const headerCells = rowCells(headerRow);
+                const columnIndex = heading => headerCells.findIndex(cell => headingMatches(normalizeHeading(cell.textContent), heading));
+                const columns = {
+                    publishedDate: columnIndex('date published'),
+                    documentType: columnIndex('document type'),
+                    description: columnIndex('description')
                 };
-            }).filter(Boolean))
+
+                if (columns.publishedDate < 0 || columns.documentType < 0 || columns.description < 0) {
+                    return JSON.stringify([]);
+                }
+
+                return JSON.stringify(rows.slice(rows.indexOf(headerRow) + 1).map(row => {
+                    const cells = rowCells(row);
+                    const viewLink = row.querySelector('a[title*="View"], a.recaptcha-link[href]');
+
+                    if (!viewLink) {
+                        return null;
+                    }
+
+                    return {
+                        publishedDate: clean(cells[columns.publishedDate]?.textContent),
+                        documentType: clean(cells[columns.documentType]?.textContent),
+                        description: clean(cells[columns.description]?.textContent),
+                        url: viewLink.href || viewLink.getAttribute('href') || ''
+                    };
+                }).filter(Boolean));
+            }
             """);
 
         var documents = JsonSerializer.Deserialize<List<DocumentDto>>(json, JsonOptions) ?? [];
@@ -1868,17 +2045,36 @@ public sealed class PlanningPortalScraper(
 
     private sealed record SaveResult(int ApplicationsSaved, int DocumentsSaved);
 
-    private sealed record AuthorityScrapeResult(IReadOnlyList<ScrapedApplication> Applications, bool Skipped);
+    private sealed record AuthorityScrapeResult(
+        IReadOnlyList<ScrapedApplication> Applications,
+        bool Skipped,
+        bool WeekUnavailable,
+        WeeklyListSelection? SelectedWeek);
 
     private sealed record PreviouslyScrapedFilterResult(int SkippedLinkCount, IReadOnlyList<string> SkippedApplications)
     {
         public static PreviouslyScrapedFilterResult Empty { get; } = new(0, Array.Empty<string>());
     }
 
-    private sealed record WeeklyListSelection(string Value, string Label, DateTime WeekStart);
+    private sealed record WeeklyListSelectionResult(
+        bool WeekSelectFound,
+        int OptionCount,
+        WeeklyListSelection? SelectedWeek);
+
+    private sealed record WeeklyListSelection(
+        int DropdownIndex,
+        string Value,
+        string Label,
+        DateTime? WeekStart);
 
     private sealed class SelectedWeekDto
     {
+        public bool Found { get; set; }
+
+        public int OptionCount { get; set; }
+
+        public int TargetIndex { get; set; }
+
         public string Value { get; set; } = string.Empty;
 
         public string Label { get; set; } = string.Empty;
