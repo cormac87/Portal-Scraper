@@ -97,6 +97,18 @@ BEGIN
         ALTER COLUMN [Website] NVARCHAR(500) NULL;
 END;
 
+IF COL_LENGTH('dbo.PlanningAuthority', 'Latitude') IS NULL
+BEGIN
+    ALTER TABLE [dbo].[PlanningAuthority]
+        ADD [Latitude] FLOAT NULL;
+END;
+
+IF COL_LENGTH('dbo.PlanningAuthority', 'Longitude') IS NULL
+BEGIN
+    ALTER TABLE [dbo].[PlanningAuthority]
+        ADD [Longitude] FLOAT NULL;
+END;
+
 IF NOT EXISTS (
     SELECT 1
     FROM sys.indexes
@@ -188,6 +200,19 @@ IF NOT EXISTS (
 BEGIN
     CREATE NONCLUSTERED INDEX [IX_PlanningAuthority_Name]
         ON [dbo].[PlanningAuthority] ([Name]);
+END;
+
+IF NOT EXISTS (
+    SELECT 1
+    FROM sys.indexes
+    WHERE name = 'IX_PlanningAuthority_Location'
+        AND object_id = OBJECT_ID('dbo.PlanningAuthority')
+)
+BEGIN
+    EXEC(N'
+        CREATE NONCLUSTERED INDEX [IX_PlanningAuthority_Location]
+            ON [dbo].[PlanningAuthority] ([Latitude], [Longitude])
+            WHERE [Latitude] IS NOT NULL AND [Longitude] IS NOT NULL;');
 END;
 
 IF FULLTEXTSERVICEPROPERTY('IsFullTextInstalled') = 1

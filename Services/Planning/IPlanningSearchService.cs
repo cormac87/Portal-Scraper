@@ -10,5 +10,6 @@ public interface IPlanningSearchService
         IReadOnlyList<FullTextSearchCriterion> criteria,
         int page,
         int pageSize,
+        IReadOnlyCollection<Guid>? planningAuthorityIds = null,
         CancellationToken cancellationToken = default);
 }

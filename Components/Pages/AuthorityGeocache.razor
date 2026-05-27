@@ -1,0 +1,38 @@
+@page "/authority-geocache"
+@inject IPlanningAuthorityLocationService AuthorityLocationService
+
+<PageTitle>Authority Geocache</PageTitle>
+
+<AuthorityGeocacheRefreshPanel IsRefreshing="@_isRefreshing"
+                               Result="@_refreshResult"
+                               OnRefresh="RefreshAuthorityLocationsAsync" />
+
+@if (!string.IsNullOrWhiteSpace(_errorMessage))
+{
+    <p class="error-message">@_errorMessage</p>
+}
+
+@code {
+    private bool _isRefreshing;
+    private string? _errorMessage;
+    private PlanningAuthorityLocationRefreshResult? _refreshResult;
+
+    private async Task RefreshAuthorityLocationsAsync()
+    {
+        _isRefreshing = true;
+        _errorMessage = null;
+
+        try
+        {
+            _refreshResult = await AuthorityLocationService.RefreshAuthorityLocationsAsync();
+        }
+        catch (Exception ex)
+        {
+            _errorMessage = $"Unable to refresh authority locations: {ex.Message}";
+        }
+        finally
+        {
+            _isRefreshing = false;
+        }
+    }
+}

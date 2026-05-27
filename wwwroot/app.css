@@ -370,6 +370,86 @@ code {
     flex-wrap: wrap;
 }
 
+.planning-location-filter {
+    display: grid;
+    gap: 0.7rem;
+    min-width: 0;
+    padding: 0.85rem;
+    border: 1px solid rgba(13, 148, 136, 0.18);
+    border-radius: 0.9rem;
+    background: rgba(248, 250, 252, 0.78);
+}
+
+.planning-location-fields {
+    display: grid;
+    grid-template-columns: minmax(12rem, 1.2fr) minmax(8rem, 0.5fr) auto auto;
+    gap: 0.75rem;
+    align-items: end;
+}
+
+.planning-location-fields label {
+    display: grid;
+    gap: 0.35rem;
+    min-width: 0;
+}
+
+.authority-location-dropdown {
+    min-width: 0;
+    border: 1px solid var(--border);
+    border-radius: 0.75rem;
+    background: #fff;
+}
+
+.authority-location-dropdown summary {
+    cursor: pointer;
+    padding: 0.75rem 0.85rem;
+    color: #24344d;
+    font-weight: 700;
+}
+
+.authority-location-options {
+    display: grid;
+    max-height: 16rem;
+    overflow: auto;
+    border-top: 1px solid var(--border);
+}
+
+.authority-location-option {
+    display: flex;
+    gap: 0.6rem;
+    align-items: flex-start;
+    min-width: 0;
+    padding: 0.65rem 0.85rem;
+    border-bottom: 1px solid rgba(216, 224, 238, 0.72);
+    color: #24344d;
+}
+
+.authority-location-option:last-child {
+    border-bottom: 0;
+}
+
+.authority-location-option input {
+    flex: 0 0 auto;
+    margin-top: 0.25rem;
+    accent-color: var(--accent);
+}
+
+.authority-location-option span {
+    display: grid;
+    gap: 0.15rem;
+    min-width: 0;
+}
+
+.authority-location-option strong,
+.authority-location-option small {
+    overflow-wrap: anywhere;
+}
+
+.authority-location-option small {
+    color: var(--muted);
+    font-weight: 600;
+}
+
 .search-summary {
     margin: 0;
     color: var(--muted);
@@ -867,6 +947,33 @@ code {
     gap: 0.75rem;
 }
 
+.authority-geocache-results {
+    margin-bottom: 1rem;
+}
+
+.authority-geocache-list {
+    display: grid;
+    gap: 0.65rem;
+    max-height: 34rem;
+    overflow: auto;
+}
+
+.authority-geocache-row {
+    display: grid;
+    grid-template-columns: minmax(14rem, 1fr) auto minmax(12rem, auto);
+    gap: 0.85rem;
+    align-items: center;
+    padding: 0.8rem;
+    border: 1px solid rgba(216, 224, 238, 0.9);
+    border-radius: 0.75rem;
+    background: rgba(248, 250, 252, 0.82);
+}
+
+.authority-geocache-row p {
+    margin: 0.2rem 0 0;
+    color: var(--muted);
+}
+
 .document-error,
 .document-empty {
     color: var(--muted);
@@ -907,6 +1014,11 @@ code {
     .modal-header {
         flex-direction: column;
         align-items: flex-start;
+    }
+
+    .planning-location-fields,
+    .authority-geocache-row {
+        grid-template-columns: 1fr;
     }
 
     .custom-column-row {

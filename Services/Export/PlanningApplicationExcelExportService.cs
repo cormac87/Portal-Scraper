@@ -84,7 +84,8 @@ SELECT CAST(
         PlanningApplicationExcelExportRequest request,
         CancellationToken cancellationToken = default)
     {
-        if (request.SearchConditions.Count == 0)
+        var authorityFilterIds = NormalizeAuthorityFilter(request.PlanningAuthorityIds);
+        if (request.SearchConditions.Count == 0 && authorityFilterIds is null)
         {
             throw new InvalidOperationException("Run a search before exporting planning results.");
         }
@@ -100,17 +101,43 @@ SELECT CAST(
             throw new InvalidOperationException("Select at least one column to export.");
         }
 
-        await using var db = await dbFactory.CreateDbContextAsync(cancellationToken);
-        if (!await IsFullTextSearchAvailableAsync(db, cancellationToken))
+        List<PlanningApplicationExportRow> rows;
+        if (authorityFilterIds is { Count: 0 })
         {
-            throw new InvalidOperationException("Keyword search export requires SQL Server Full-Text Search and the planning full-text indexes.");
+            rows = [];
+        }
+        else
+        {
+            await using var db = await dbFactory.CreateDbContextAsync(cancellationToken);
+            if (request.SearchConditions.Count > 0)
+            {
+                if (!await IsFullTextSearchAvailableAsync(db, cancellationToken))
+                {
+                    throw new InvalidOperationException("Keyword search export requires SQL Server Full-Text Search and the planning full-text indexes.");
+                }
+
+                rows = await ExecuteExportSearchAsync(db, request.SearchConditions, authorityFilterIds, cancellationToken);
+            }
+            else
+            {
+                rows = await ExecuteAuthorityFilteredExportAsync(db, authorityFilterIds!, cancellationToken);
+            }
         }
 
-        var rows = await ExecuteExportSearchAsync(db, request.SearchConditions, cancellationToken);
         var content = BuildWorkbook(rows, selectedColumns, customColumns);
         var fileName = $"planning-results-{DateTime.Now:yyyyMMdd-HHmmss}.xlsx";
 
         return new PlanningApplicationExcelExportResult(fileName, ExcelContentType, content);
+    }
+
+    private static List<Guid>? NormalizeAuthorityFilter(IReadOnlyCollection<Guid>? planningAuthorityIds)
+    {
+        return planningAuthorityIds is null
+            ? null
+            : planningAuthorityIds
+                .Where(id => id != Guid.Empty)
+                .Distinct()
+                .ToList();
     }
 
     private static List<PlanningApplicationExportColumn> GetSelectedColumns(IReadOnlyList<string> columnKeys)
@@ -165,9 +192,46 @@ SELECT CAST(
         }
     }
 
+    private static Task<List<PlanningApplicationExportRow>> ExecuteAuthorityFilteredExportAsync(
+        ApplicationDbContext db,
+        IReadOnlyList<Guid> authorityFilterIds,
+        CancellationToken cancellationToken)
+    {
+        return db.PlanningApplications
+            .AsNoTracking()
+            .Include(application => application.PlanningAuthority)
+            .Where(application => authorityFilterIds.Contains(application.PlanningAuthorityId))
+            .OrderByDescending(application => application.ValidatedDate)
+            .ThenByDescending(application => application.ReceivedDate)
+            .ThenBy(application => application.ApplicationReference)
+            .ThenBy(application => application.Title)
+            .ThenBy(application => application.Id)
+            .Select(application => new PlanningApplicationExportRow
+            {
+                PlanningAuthorityName = application.PlanningAuthority.Name,
+                Title = application.Title,
+                ReceivedDate = application.ReceivedDate,
+                ValidatedDate = application.ValidatedDate,
+                Status = application.Status,
+                ApplicantEmail = application.ApplicantEmail,
+                ApplicantPhone = application.ApplicantPhone,
+                ApplicantName = application.ApplicantName,
+                AgentEmail = application.AgentEmail,
+                AgentPhone = application.AgentPhone,
+                AgentName = application.AgentName,
+                CompanyName = application.CompanyName,
+                Address = application.Address,
+                Description = application.Description,
+                ApplicationReference = application.ApplicationReference,
+                SourceUrl = application.SourceUrl
+            })
+            .ToListAsync(cancellationToken);
+    }
+
     private static async Task<List<PlanningApplicationExportRow>> ExecuteExportSearchAsync(
         ApplicationDbContext db,
         IReadOnlyList<string> searchConditions,
+        IReadOnlyList<Guid>? authorityFilterIds,
         CancellationToken cancellationToken)
     {
         var rows = new List<PlanningApplicationExportRow>();
@@ -182,8 +246,9 @@ SELECT CAST(
         try
         {
             await using var command = connection.CreateCommand();
-            command.CommandText = BuildExportSearchSql(searchConditions.Count);
+            command.CommandText = BuildExportSearchSql(searchConditions.Count, authorityFilterIds);
             AddSearchConditionParameters(command, searchConditions);
+            AddAuthorityFilterParameters(command, authorityFilterIds);
             AddParameter(command, "@SearchCriteriaCount", searchConditions.Count);
 
             await using var reader = await command.ExecuteReaderAsync(cancellationToken);
@@ -221,7 +286,7 @@ SELECT CAST(
         return rows;
     }
 
-    private static string BuildExportSearchSql(int searchCriteriaCount)
+    private static string BuildExportSearchSql(int searchCriteriaCount, IReadOnlyList<Guid>? authorityFilterIds)
     {
         var sql = new StringBuilder();
         AppendMatchedApplicationsCte(sql, searchCriteriaCount);
@@ -257,7 +322,9 @@ FROM [RankedApplications]
         ON [application].[Id] = [RankedApplications].[PlanningApplicationId]
     INNER JOIN [dbo].[PlanningAuthority] AS [authority]
         ON [authority].[Id] = [application].[PlanningAuthorityId]
-ORDER BY [RankedApplications].[SearchRank] DESC,
+");
+        AppendAuthorityFilterWhereClause(sql, authorityFilterIds);
+        sql.AppendLine(@"ORDER BY [RankedApplications].[SearchRank] DESC,
     [application].[ValidatedDate] DESC,
     [application].[ReceivedDate] DESC,
     [application].[ApplicationReference],
@@ -439,6 +506,33 @@ ORDER BY [RankedApplications].[SearchRank] DESC,
         {
             AddParameter(command, $"@SearchCondition{index}", searchConditions[index]);
         }
+    }
+
+    private static void AddAuthorityFilterParameters(DbCommand command, IReadOnlyList<Guid>? authorityFilterIds)
+    {
+        if (authorityFilterIds is null)
+        {
+            return;
+        }
+
+        for (var index = 0; index < authorityFilterIds.Count; index++)
+        {
+            AddParameter(command, $"@AuthorityId{index}", authorityFilterIds[index]);
+        }
+    }
+
+    private static void AppendAuthorityFilterWhereClause(StringBuilder sql, IReadOnlyList<Guid>? authorityFilterIds)
+    {
+        if (authorityFilterIds is null)
+        {
+            return;
+        }
+
+        var parameterNames = Enumerable
+            .Range(0, authorityFilterIds.Count)
+            .Select(index => $"@AuthorityId{index}");
+
+        sql.AppendLine($"WHERE [application].[PlanningAuthorityId] IN ({string.Join(", ", parameterNames)})");
     }
 
     private static string? GetNullableString(DbDataReader reader, string name)

@@ -1,5 +1,5 @@
 <section class="planning-search">
-    <form class="planning-search-form" @onsubmit="SearchAsync" @onsubmit:preventDefault="true">
+    <div class="planning-search-form">
         <label class="field-label">Keyword search criteria</label>
         <div class="planning-search-criteria">
             @for (var index = 0; index < Criteria.Count; index++)
@@ -12,7 +12,8 @@
                                placeholder="@GetSearchCriterionPlaceholder(index)"
                                aria-label="@GetSearchCriterionLabel(index)"
                                @bind="criterion.Text"
-                               @bind:event="oninput" />
+                               @bind:event="oninput"
+                               @onkeydown="HandleKeywordKeyDownAsync" />
                         <button class="icon-button search-settings-button"
                                 type="button"
                                 title="Search settings"
@@ -31,11 +32,19 @@
                 </div>
             }
         </div>
+
+        <PlanningLocationFilter Filter="@LocationFilter"
+                                IsBusy="@(IsSearching || IsFindingLocationAuthorities)"
+                                IsFindingAuthorities="@IsFindingLocationAuthorities"
+                                ErrorMessage="@LocationErrorMessage"
+                                OnFindAuthorities="OnFindLocationAuthorities"
+                                OnClear="OnClearLocationFilter" />
+
         <div class="planning-search-actions">
             <button class="secondary-button" type="button" @onclick="OnAddCriterion" disabled="@IsSearching">
                 Add criterion
             </button>
-            <button class="primary-button" type="submit" disabled="@IsSearching">
+            <button class="primary-button" type="button" @onclick="SearchAsync" disabled="@IsSearching">
                 @SearchButtonLabel
             </button>
             @if (SearchHasRun)
@@ -45,7 +54,7 @@
                 </button>
             }
         </div>
-    </form>
+    </div>
 
     @if (SearchHasRun && !IsSearching)
     {
@@ -60,7 +69,16 @@
     public IList<PlanningSearchCriterionInput> Criteria { get; set; } = [];
 
     [Parameter]
+    public PlanningLocationFilterInput LocationFilter { get; set; } = new();
+
+    [Parameter]
     public bool IsSearching { get; set; }
+
+    [Parameter]
+    public bool IsFindingLocationAuthorities { get; set; }
+
+    [Parameter]
+    public string? LocationErrorMessage { get; set; }
 
     [Parameter]
     public bool SearchHasRun { get; set; }
@@ -86,6 +104,12 @@
     [Parameter]
     public EventCallback OnClear { get; set; }
 
+    [Parameter]
+    public EventCallback OnFindLocationAuthorities { get; set; }
+
+    [Parameter]
+    public EventCallback OnClearLocationFilter { get; set; }
+
     private string SearchButtonLabel => IsSearching ? "Searching..." : "Search";
 
     private Task SearchAsync()
@@ -101,6 +125,13 @@
     private Task OpenSettingsAsync(PlanningSearchCriterionInput criterion)
     {
         return OnOpenSettings.InvokeAsync(criterion);
+    }
+
+    private Task HandleKeywordKeyDownAsync(KeyboardEventArgs args)
+    {
+        return string.Equals(args.Key, "Enter", StringComparison.OrdinalIgnoreCase)
+            ? SearchAsync()
+            : Task.CompletedTask;
     }
 
     private static string GetSearchCriterionInputId(int index)

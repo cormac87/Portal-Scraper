@@ -1,0 +1,81 @@
+<section class="page-header">
+    <div>
+        <p class="eyebrow">Authority geocache</p>
+        <h1>Planning authority locations</h1>
+        <p class="lead">
+            Refresh the stored latitude and longitude for every planning authority using the configured Google Maps geocoding key.
+        </p>
+    </div>
+    <div class="page-header-actions">
+        <button class="primary-button" type="button" @onclick="OnRefresh" disabled="@IsRefreshing">
+            @RefreshButtonLabel
+        </button>
+    </div>
+</section>
+
+@if (Result is not null)
+{
+    <section class="scrape-result">
+        <h2>Refresh result</h2>
+        @if (!string.IsNullOrWhiteSpace(Result.ErrorMessage))
+        {
+            <p class="error-message">@Result.ErrorMessage</p>
+        }
+        else
+        {
+            <p>
+                Updated <strong>@Result.UpdatedCount</strong>,
+                not found <strong>@Result.NotFoundCount</strong>,
+                failed <strong>@Result.FailedCount</strong>.
+            </p>
+        }
+    </section>
+}
+
+@if (Result?.Items.Count > 0)
+{
+    <section class="planning-card authority-geocache-results">
+        <header>
+            <div>
+                <p class="planning-authority">Latest refresh</p>
+                <h2 class="planning-title">@Result.Items.Count authority results</h2>
+            </div>
+        </header>
+        <div class="authority-geocache-list">
+            @foreach (var item in Result.Items)
+            {
+                <article class="authority-geocache-row" @key="item.AuthorityId">
+                    <div>
+                        <strong>@item.AuthorityName</strong>
+                        @if (!string.IsNullOrWhiteSpace(item.Message))
+                        {
+                            <p>@item.Message</p>
+                        }
+                    </div>
+                    <span class="status-pill">@item.Status</span>
+                    <span>@FormatCoordinate(item.Latitude, item.Longitude)</span>
+                </article>
+            }
+        </div>
+    </section>
+}
+
+@code {
+    [Parameter]
+    public bool IsRefreshing { get; set; }
+
+    [Parameter]
+    public PlanningAuthorityLocationRefreshResult? Result { get; set; }
+
+    [Parameter]
+    public EventCallback OnRefresh { get; set; }
+
+    private string RefreshButtonLabel => IsRefreshing ? "Refreshing..." : "Refresh authority locations";
+
+    private static string FormatCoordinate(double? latitude, double? longitude)
+    {
+        return latitude is null || longitude is null
+            ? "No coordinates"
+            : $"{latitude.Value:0.000000}, {longitude.Value:0.000000}";
+    }
+}

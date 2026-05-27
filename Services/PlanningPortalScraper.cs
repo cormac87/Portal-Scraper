@@ -67,7 +67,7 @@ public sealed class PlanningPortalScraper(
         await using var db = await dbFactory.CreateDbContextAsync(cancellationToken);
         var authorities = await db.PlanningAuthorities
             .AsNoTracking()
-            .Where(authority => authority.Website != null && authority.Website != "" && authority.Name.Contains("Westminster"))
+            .Where(authority => authority.Website != null && authority.Website != "")
             .OrderBy(authority => authority.Name)
             .ToListAsync(cancellationToken);
 

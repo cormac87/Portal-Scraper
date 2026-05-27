@@ -1,0 +1,118 @@
+<div class="planning-location-filter">
+    <div class="planning-location-fields">
+        <label>
+            <span class="field-label">Postcode</span>
+            <input class="text-input"
+                   placeholder="SW1A 1AA"
+                   aria-label="Location filter postcode"
+                   @bind="Filter.Postcode"
+                   @bind:event="oninput"
+                   @onkeydown="HandleKeyDownAsync"
+                   disabled="@IsBusy" />
+        </label>
+        <label>
+            <span class="field-label">Distance km</span>
+            <input class="text-input"
+                   type="number"
+                   min="1"
+                   step="1"
+                   aria-label="Location filter radius in kilometres"
+                   @bind="Filter.RadiusKm"
+                   @bind:event="oninput"
+                   @onkeydown="HandleKeyDownAsync"
+                   disabled="@IsBusy" />
+        </label>
+        <button class="secondary-button" type="button" @onclick="FindAuthoritiesAsync" disabled="@IsBusy">
+            @FindButtonLabel
+        </button>
+        @if (Filter.HasResolved)
+        {
+            <button class="secondary-button" type="button" @onclick="ClearAsync" disabled="@IsBusy">
+                Clear location
+            </button>
+        }
+    </div>
+
+    @if (!string.IsNullOrWhiteSpace(ErrorMessage))
+    {
+        <p class="error-message">@ErrorMessage</p>
+    }
+
+    @if (Filter.HasResolved)
+    {
+        <details class="authority-location-dropdown" open>
+            <summary>@SelectionSummary</summary>
+            @if (Filter.Authorities.Count == 0)
+            {
+                <p class="document-empty">No cached planning authority coordinates were found inside this radius.</p>
+            }
+            else
+            {
+                <div class="authority-location-options">
+                    @foreach (var authority in Filter.Authorities)
+                    {
+                        <label class="authority-location-option" @key="authority.Id">
+                            <input type="checkbox"
+                                   @bind="authority.IsSelected"
+                                   disabled="@IsBusy" />
+                            <span>
+                                <strong>@authority.Name</strong>
+                                <small>@authority.DistanceKm.ToString("0.0") km away</small>
+                            </span>
+                        </label>
+                    }
+                </div>
+            }
+        </details>
+    }
+</div>
+
+@code {
+    [Parameter]
+    public PlanningLocationFilterInput Filter { get; set; } = new();
+
+    [Parameter]
+    public bool IsBusy { get; set; }
+
+    [Parameter]
+    public bool IsFindingAuthorities { get; set; }
+
+    [Parameter]
+    public string? ErrorMessage { get; set; }
+
+    [Parameter]
+    public EventCallback OnFindAuthorities { get; set; }
+
+    [Parameter]
+    public EventCallback OnClear { get; set; }
+
+    private string FindButtonLabel => IsFindingAuthorities ? "Finding..." : "Find authorities";
+
+    private string SelectionSummary
+    {
+        get
+        {
+            var selectedCount = Filter.Authorities.Count(authority => authority.IsSelected);
+            return Filter.Authorities.Count == 0
+                ? "0 authorities found"
+                : $"{selectedCount} of {Filter.Authorities.Count} authorities included";
+        }
+    }
+
+    private Task FindAuthoritiesAsync()
+    {
+        return OnFindAuthorities.InvokeAsync();
+    }
+
+    private Task ClearAsync()
+    {
+        return OnClear.InvokeAsync();
+    }
+
+    private Task HandleKeyDownAsync(KeyboardEventArgs args)
+    {
+        return string.Equals(args.Key, "Enter", StringComparison.OrdinalIgnoreCase)
+            ? FindAuthoritiesAsync()
+            : Task.CompletedTask;
+    }
+}

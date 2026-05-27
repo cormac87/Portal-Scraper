@@ -88,14 +88,31 @@ SELECT CAST(
         IReadOnlyList<FullTextSearchCriterion> criteria,
         int page,
         int pageSize,
+        IReadOnlyCollection<Guid>? planningAuthorityIds = null,
         CancellationToken cancellationToken = default)
     {
-        if (criteria.Count == 0)
+        var authorityFilterIds = NormalizeAuthorityFilter(planningAuthorityIds);
+        if (criteria.Count == 0 && authorityFilterIds is null)
+        {
+            return new PlanningKeywordSearchPage([], 0, 1, IsFullTextSearchAvailable: true);
+        }
+
+        if (authorityFilterIds is { Count: 0 })
         {
             return new PlanningKeywordSearchPage([], 0, 1, IsFullTextSearchAvailable: true);
         }
 
         await using var db = await dbFactory.CreateDbContextAsync(cancellationToken);
+        if (criteria.Count == 0 && authorityFilterIds is not null)
+        {
+            return await SearchAuthorityFilteredApplicationsAsync(
+                db,
+                authorityFilterIds,
+                page,
+                pageSize,
+                cancellationToken);
+        }
+
         if (!await IsFullTextSearchAvailableAsync(db, cancellationToken))
         {
             return new PlanningKeywordSearchPage([], 0, 1, IsFullTextSearchAvailable: false);
@@ -104,16 +121,68 @@ SELECT CAST(
         var searchConditions = criteria
             .Select(criterion => criterion.SearchCondition)
             .ToList();
-        var totalCount = await ExecuteSearchCountAsync(db, searchConditions, cancellationToken);
+        var totalCount = await ExecuteSearchCountAsync(db, searchConditions, authorityFilterIds, cancellationToken);
         var currentPage = PlanningPagination.ClampPage(page, totalCount, pageSize);
         var results = totalCount == 0
             ? []
             : await ExecuteSearchAsync(
                 db,
                 searchConditions,
+                authorityFilterIds,
                 PlanningPagination.GetPageSkip(currentPage, pageSize),
                 pageSize,
                 cancellationToken);
+
+        return new PlanningKeywordSearchPage(results, totalCount, currentPage, IsFullTextSearchAvailable: true);
+    }
+
+    private static List<Guid>? NormalizeAuthorityFilter(IReadOnlyCollection<Guid>? planningAuthorityIds)
+    {
+        return planningAuthorityIds is null
+            ? null
+            : planningAuthorityIds
+                .Where(id => id != Guid.Empty)
+                .Distinct()
+                .ToList();
+    }
+
+    private static async Task<PlanningKeywordSearchPage> SearchAuthorityFilteredApplicationsAsync(
+        ApplicationDbContext db,
+        IReadOnlyList<Guid> authorityFilterIds,
+        int page,
+        int pageSize,
+        CancellationToken cancellationToken)
+    {
+        var query = db.PlanningApplications
+            .AsNoTracking()
+            .Include(application => application.PlanningAuthority)
+            .Where(application => authorityFilterIds.Contains(application.PlanningAuthorityId));
+
+        var totalCount = await query.CountAsync(cancellationToken);
+        var currentPage = PlanningPagination.ClampPage(page, totalCount, pageSize);
+        var results = await query
+            .OrderByDescending(application => application.ValidatedDate)
+            .ThenByDescending(application => application.ReceivedDate)
+            .ThenBy(application => application.ApplicationReference)
+            .ThenBy(application => application.Title)
+            .ThenBy(application => application.Id)
+            .Skip(PlanningPagination.GetPageSkip(currentPage, pageSize))
+            .Take(pageSize)
+            .Select(application => new PlanningSearchResult
+            {
+                MatchType = "Authority",
+                PlanningApplicationId = application.Id,
+                PlanningAuthorityName = application.PlanningAuthority.Name,
+                ApplicationReference = application.ApplicationReference,
+                ApplicationTitle = application.Title,
+                Status = application.Status,
+                Address = application.Address,
+                ReceivedDate = application.ReceivedDate,
+                ValidatedDate = application.ValidatedDate,
+                Url = application.SourceUrl,
+                SearchRank = 0
+            })
+            .ToListAsync(cancellationToken);
 
         return new PlanningKeywordSearchPage(results, totalCount, currentPage, IsFullTextSearchAvailable: true);
     }
@@ -132,6 +201,7 @@ SELECT CAST(
     private static async Task<List<PlanningSearchResult>> ExecuteSearchAsync(
         ApplicationDbContext db,
         IReadOnlyList<string> searchConditions,
+        IReadOnlyList<Guid>? authorityFilterIds,
         int skip,
         int take,
         CancellationToken cancellationToken)
@@ -148,8 +218,9 @@ SELECT CAST(
         try
         {
             await using var command = connection.CreateCommand();
-            command.CommandText = BuildKeywordSearchSql(searchConditions.Count);
+            command.CommandText = BuildKeywordSearchSql(searchConditions.Count, authorityFilterIds);
             AddSearchConditionParameters(command, searchConditions);
+            AddAuthorityFilterParameters(command, authorityFilterIds);
             AddParameter(command, "@SearchCriteriaCount", searchConditions.Count);
             AddParameter(command, "@Skip", skip);
             AddParameter(command, "@Take", take);
@@ -189,7 +260,7 @@ SELECT CAST(
         return results;
     }
 
-    private static string BuildKeywordSearchSql(int searchCriteriaCount)
+    private static string BuildKeywordSearchSql(int searchCriteriaCount, IReadOnlyList<Guid>? authorityFilterIds)
     {
         var sql = new StringBuilder();
         AppendMatchedApplicationsCte(sql, searchCriteriaCount, includeRankAndFlags: true);
@@ -232,7 +303,9 @@ FROM [RankedApplications]
         ON [application].[Id] = [RankedApplications].[PlanningApplicationId]
     INNER JOIN [dbo].[PlanningAuthority] AS [authority]
         ON [authority].[Id] = [application].[PlanningAuthorityId]
-ORDER BY [RankedApplications].[SearchRank] DESC,
+");
+        AppendAuthorityFilterWhereClause(sql, authorityFilterIds);
+        sql.AppendLine(@"ORDER BY [RankedApplications].[SearchRank] DESC,
     [application].[ValidatedDate] DESC,
     [application].[ReceivedDate] DESC,
     [application].[ApplicationReference],
@@ -243,7 +316,7 @@ OFFSET @Skip ROWS FETCH NEXT @Take ROWS ONLY");
         return sql.ToString();
     }
 
-    private static string BuildKeywordSearchCountSql(int searchCriteriaCount)
+    private static string BuildKeywordSearchCountSql(int searchCriteriaCount, IReadOnlyList<Guid>? authorityFilterIds)
     {
         var sql = new StringBuilder();
         AppendMatchedApplicationsCte(sql, searchCriteriaCount, includeRankAndFlags: false);
@@ -257,6 +330,12 @@ RankedApplications AS
 )
 SELECT CAST(COUNT_BIG(*) AS int) AS [Value]
 FROM [RankedApplications]");
+        if (authorityFilterIds is not null)
+        {
+            sql.AppendLine(@"INNER JOIN [dbo].[PlanningApplication] AS [application]
+    ON [application].[Id] = [RankedApplications].[PlanningApplicationId]");
+            AppendAuthorityFilterWhereClause(sql, authorityFilterIds);
+        }
 
         return sql.ToString();
     }
@@ -334,6 +413,7 @@ FROM [RankedApplications]");
     private static async Task<int> ExecuteSearchCountAsync(
         ApplicationDbContext db,
         IReadOnlyList<string> searchConditions,
+        IReadOnlyList<Guid>? authorityFilterIds,
         CancellationToken cancellationToken)
     {
         var connection = db.Database.GetDbConnection();
@@ -347,8 +427,9 @@ FROM [RankedApplications]");
         try
         {
             await using var command = connection.CreateCommand();
-            command.CommandText = BuildKeywordSearchCountSql(searchConditions.Count);
+            command.CommandText = BuildKeywordSearchCountSql(searchConditions.Count, authorityFilterIds);
             AddSearchConditionParameters(command, searchConditions);
+            AddAuthorityFilterParameters(command, authorityFilterIds);
             AddParameter(command, "@SearchCriteriaCount", searchConditions.Count);
             var result = await command.ExecuteScalarAsync(cancellationToken);
 
@@ -408,6 +489,33 @@ FROM [RankedApplications]");
         {
             AddParameter(command, $"@SearchCondition{index}", searchConditions[index]);
         }
+    }
+
+    private static void AddAuthorityFilterParameters(DbCommand command, IReadOnlyList<Guid>? authorityFilterIds)
+    {
+        if (authorityFilterIds is null)
+        {
+            return;
+        }
+
+        for (var index = 0; index < authorityFilterIds.Count; index++)
+        {
+            AddParameter(command, $"@AuthorityId{index}", authorityFilterIds[index]);
+        }
+    }
+
+    private static void AppendAuthorityFilterWhereClause(StringBuilder sql, IReadOnlyList<Guid>? authorityFilterIds)
+    {
+        if (authorityFilterIds is null)
+        {
+            return;
+        }
+
+        var parameterNames = Enumerable
+            .Range(0, authorityFilterIds.Count)
+            .Select(index => $"@AuthorityId{index}");
+
+        sql.AppendLine($"WHERE [application].[PlanningAuthorityId] IN ({string.Join(", ", parameterNames)})");
     }
 
     private static string? GetNullableString(DbDataReader reader, string name)

@@ -11,7 +11,8 @@ public sealed record PlanningApplicationExportSelection(
 public sealed record PlanningApplicationExcelExportRequest(
     IReadOnlyList<string> SearchConditions,
     IReadOnlyList<string> ColumnKeys,
-    IReadOnlyList<PlanningApplicationExportCustomColumn> CustomColumns);
+    IReadOnlyList<PlanningApplicationExportCustomColumn> CustomColumns,
+    IReadOnlyList<Guid>? PlanningAuthorityIds = null);
 
 public sealed record PlanningApplicationExcelExportResult(
     string FileName,

@@ -13,5 +13,9 @@ public sealed class PlanningAuthority
     [StringLength(500)]
     public string? Website { get; set; }
 
+    public double? Latitude { get; set; }
+
+    public double? Longitude { get; set; }
+
     public ICollection<PlanningApplication> PlanningApplications { get; set; } = [];
 }

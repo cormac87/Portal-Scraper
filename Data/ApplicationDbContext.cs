@@ -29,6 +29,10 @@ public sealed class ApplicationDbContext(DbContextOptions<ApplicationDbContext> 
 
             entity.HasIndex(item => item.Name)
                 .HasDatabaseName("IX_PlanningAuthority_Name");
+
+            entity.HasIndex(item => new { item.Latitude, item.Longitude })
+                .HasDatabaseName("IX_PlanningAuthority_Location")
+                .HasFilter("[Latitude] IS NOT NULL AND [Longitude] IS NOT NULL");
         });
 
         modelBuilder.Entity<PlanningApplication>(entity =>

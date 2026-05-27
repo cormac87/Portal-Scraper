@@ -4,6 +4,7 @@ using PortalScraper.Data;
 using PortalScraper.Services;
 using PortalScraper.Services.Documents;
 using PortalScraper.Services.Export;
+using PortalScraper.Services.Geocoding;
 using PortalScraper.Services.Planning;
 
 System.Text.Encoding.RegisterProvider(System.Text.CodePagesEncodingProvider.Instance);
@@ -19,12 +20,23 @@ builder.Services.AddDbContextFactory<ApplicationDbContext>(options =>
     options.UseSqlServer(connectionString));
 builder.Services.Configure<PlanningPortalScraperOptions>(
     builder.Configuration.GetSection(PlanningPortalScraperOptions.SectionName));
+builder.Services.Configure<GoogleMapsGeocodingOptions>(
+    builder.Configuration.GetSection(GoogleMapsGeocodingOptions.SectionName));
 builder.Services.AddScoped<IPlanningPortalScraper, PlanningPortalScraper>();
 builder.Services.AddScoped<IPlanningDataService, PlanningDataService>();
 builder.Services.AddScoped<IPlanningSearchService, PlanningSearchService>();
+builder.Services.AddScoped<IPlanningAuthorityLocationService, PlanningAuthorityLocationService>();
 builder.Services.AddScoped<IRelevantPlanningDocumentService, RelevantPlanningDocumentService>();
 builder.Services.AddScoped<IPlanningApplicationExcelExportService, PlanningApplicationExcelExportService>();
 builder.Services.AddScoped<IPlanningDocumentContentService, PlanningDocumentContentService>();
+builder.Services.AddHttpClient<IGoogleGeocodingService, GoogleGeocodingService>(client =>
+{
+    client.BaseAddress = new Uri("https://maps.googleapis.com/");
+});
+builder.Services.AddHttpClient<IPostcodeGeocodingService, PostcodesIoGeocodingService>(client =>
+{
+    client.BaseAddress = new Uri("https://api.postcodes.io/");
+});
 builder.Services.AddSingleton<PlanningDocumentTextExtractor, PdfPlanningDocumentTextExtractor>();
 builder.Services.AddSingleton<PlanningDocumentTextExtractor, TextPlanningDocumentTextExtractor>();
 builder.Services.AddSingleton<PlanningDocumentTextExtractor, WordPlanningDocumentTextExtractor>();

@@ -4,6 +4,8 @@
 @inject IPlanningSearchService PlanningSearchService
 @inject IPlanningPortalScraper Scraper
 @inject IPlanningApplicationExcelExportService ExcelExportService
+@inject IPlanningAuthorityLocationService AuthorityLocationService
+@inject IPostcodeGeocodingService PostcodeGeocodingService
 @inject IJSRuntime JS
 
 <PageTitle>Planning Portal Scraper</PageTitle>
@@ -18,7 +20,10 @@
                       DocumentTotalCount="@_documentTotalCount" />
 
 <PlanningSearchPanel Criteria="@_searchCriteria"
+                     LocationFilter="@_locationFilter"
                      IsSearching="@_isSearching"
+                     IsFindingLocationAuthorities="@_isFindingLocationAuthorities"
+                     LocationErrorMessage="@_locationErrorMessage"
                      SearchHasRun="@_searchHasRun"
                      LastSearchText="@_lastSearchText"
                      SearchPaginationSummary="@SearchPaginationSummary"
@@ -26,6 +31,8 @@
                      OnAddCriterion="AddSearchCriterion"
                      OnRemoveCriterion="RemoveSearchCriterion"
                      OnOpenSettings="OpenSearchSettingsModal"
+                     OnFindLocationAuthorities="FindLocationAuthoritiesAsync"
+                     OnClearLocationFilter="ClearLocationFilter"
                      OnClear="ClearSearch" />
 
 @if (_isSearchSettingsModalOpen && _selectedSearchCriterion is not null)
@@ -105,6 +112,8 @@ else
     private List<PlanningSearchCriterionInput> _searchCriteria = [new()];
     private List<string> _lastSearchConditions = [];
     private List<FullTextSearchCriterion> _lastSearchCriteria = [];
+    private List<Guid>? _lastSearchAuthorityIds;
+    private PlanningLocationFilterInput _locationFilter = new();
     private WeeklyScrapeResult? _lastResult;
     private int _applicationPage = 1;
     private int _applicationTotalCount;
@@ -114,6 +123,7 @@ else
     private bool _isLoading = true;
     private bool _isScraping;
     private bool _isSearching;
+    private bool _isFindingLocationAuthorities;
     private bool _searchHasRun;
     private bool _isApplicationModalOpen;
     private bool _isDocumentsModalOpen;
@@ -124,6 +134,7 @@ else
     private PlanningApplication? _selectedApplication;
     private PlanningSearchCriterionInput? _selectedSearchCriterion;
     private string? _errorMessage;
+    private string? _locationErrorMessage;
     private string? _lastSearchText;
 
     private int ApplicationTotalPages => PlanningPagination.GetTotalPages(_applicationTotalCount, ApplicationPageSize);
@@ -135,7 +146,7 @@ else
         && !_isSearching
         && !_isExporting
         && _searchTotalCount > 0
-        && _lastSearchConditions.Count > 0;
+        && (_lastSearchConditions.Count > 0 || _lastSearchAuthorityIds is not null);
     private bool CanShowRelevantDocuments => _selectedApplication?.PlanningDocuments.Count > 0 && GetRelevantDocumentCriteria().Count > 0;
 
     protected override async Task OnInitializedAsync()
@@ -191,7 +202,8 @@ else
     private async Task SearchAsync()
     {
         var searchCriteria = PlanningSearchService.BuildCriteria(_searchCriteria);
-        if (searchCriteria.Count == 0)
+        var authorityFilterIds = GetActiveAuthorityFilterIds();
+        if (searchCriteria.Count == 0 && authorityFilterIds is null)
         {
             ClearSearch();
             return;
@@ -202,11 +214,12 @@ else
         _searchPage = 1;
         _searchTotalCount = 0;
         _searchResults = [];
-        _lastSearchText = PlanningSearchService.FormatCriteriaSummary(searchCriteria);
+        _lastSearchText = BuildSearchSummary(searchCriteria, authorityFilterIds);
         _lastSearchConditions = searchCriteria
             .Select(criterion => criterion.SearchCondition)
             .ToList();
         _lastSearchCriteria = searchCriteria;
+        _lastSearchAuthorityIds = authorityFilterIds?.ToList();
         _errorMessage = null;
 
         await LoadSearchPageAsync();
@@ -214,7 +227,7 @@ else
 
     private async Task LoadSearchPageAsync()
     {
-        if (_lastSearchCriteria.Count == 0)
+        if (_lastSearchCriteria.Count == 0 && _lastSearchAuthorityIds is null)
         {
             ClearSearch();
             return;
@@ -225,7 +238,11 @@ else
 
         try
         {
-            var searchPage = await PlanningSearchService.SearchAsync(_lastSearchCriteria, _searchPage, SearchPageSize);
+            var searchPage = await PlanningSearchService.SearchAsync(
+                _lastSearchCriteria,
+                _searchPage,
+                SearchPageSize,
+                _lastSearchAuthorityIds);
             if (!searchPage.IsFullTextSearchAvailable)
             {
                 _searchHasRun = false;
@@ -258,7 +275,50 @@ else
         _searchTotalCount = 0;
         _lastSearchConditions = [];
         _lastSearchCriteria = [];
+        _lastSearchAuthorityIds = null;
         _lastSearchText = null;
+    }
+
+    private async Task FindLocationAuthoritiesAsync()
+    {
+        _isFindingLocationAuthorities = true;
+        _locationErrorMessage = null;
+
+        try
+        {
+            var coordinate = await PostcodeGeocodingService.GeocodePostcodeAsync(_locationFilter.Postcode);
+            var authorities = await AuthorityLocationService.FindAuthoritiesWithinRadiusAsync(
+                coordinate.Latitude,
+                coordinate.Longitude,
+                _locationFilter.RadiusKm);
+
+            _locationFilter.HasResolved = true;
+            _locationFilter.Authorities = authorities
+                .Select(authority => new PlanningAuthorityLocationSelection
+                {
+                    Id = authority.Id,
+                    Name = authority.Name,
+                    Latitude = authority.Latitude,
+                    Longitude = authority.Longitude,
+                    DistanceKm = authority.DistanceKm,
+                    IsSelected = true
+                })
+                .ToList();
+        }
+        catch (Exception ex)
+        {
+            _locationErrorMessage = $"Unable to find nearby authorities: {ex.Message}";
+        }
+        finally
+        {
+            _isFindingLocationAuthorities = false;
+        }
+    }
+
+    private void ClearLocationFilter()
+    {
+        _locationFilter = new PlanningLocationFilterInput();
+        _locationErrorMessage = null;
     }
 
     private void AddSearchCriterion()
@@ -315,7 +375,7 @@ else
 
     private async Task ExportSearchResultsAsync(PlanningApplicationExportSelection selection)
     {
-        if (_lastSearchConditions.Count == 0)
+        if (_lastSearchConditions.Count == 0 && _lastSearchAuthorityIds is null)
         {
             _isExportColumnsModalOpen = false;
             return;
@@ -330,7 +390,8 @@ else
             var result = await ExcelExportService.ExportSearchResultsAsync(new PlanningApplicationExcelExportRequest(
                 _lastSearchConditions.ToList(),
                 selection.ColumnKeys,
-                selection.CustomColumns));
+                selection.CustomColumns,
+                _lastSearchAuthorityIds?.ToList()));
 
             using var stream = new MemoryStream(result.Content);
             using var streamReference = new DotNetStreamReference(stream);
@@ -465,6 +526,33 @@ else
         return _lastSearchCriteria.Count > 0
             ? _lastSearchCriteria
             : PlanningSearchService.BuildCriteria(_searchCriteria);
+    }
+
+    private List<Guid>? GetActiveAuthorityFilterIds()
+    {
+        return _locationFilter.HasResolved
+            ? _locationFilter.SelectedAuthorityIds.ToList()
+            : null;
+    }
+
+    private string BuildSearchSummary(
+        IReadOnlyList<FullTextSearchCriterion> criteria,
+        IReadOnlyList<Guid>? authorityFilterIds)
+    {
+        var parts = new List<string>();
+        if (criteria.Count > 0)
+        {
+            parts.Add(PlanningSearchService.FormatCriteriaSummary(criteria));
+        }
+
+        if (authorityFilterIds is not null)
+        {
+            parts.Add($"{authorityFilterIds.Count} of {_locationFilter.Authorities.Count} authorities near {_locationFilter.Postcode.Trim()}");
+        }
+
+        return parts.Count == 0
+            ? "planning applications"
+            : string.Join(" + ", parts);
     }
 
     private string GetSearchCriterionSettingsContext(PlanningSearchCriterionInput criterion)
