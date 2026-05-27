@@ -16,6 +16,19 @@ public sealed class PlanningLocationFilterInput
         .ToList();
 }
 
+public sealed class PlanningDateRangeFilterInput
+{
+    public DateTime? StartDate { get; set; }
+
+    public DateTime? EndDate { get; set; }
+
+    public bool HasActive => StartDate.HasValue || EndDate.HasValue;
+
+    public bool HasInvalidRange => StartDate.HasValue
+        && EndDate.HasValue
+        && StartDate.Value.Date > EndDate.Value.Date;
+}
+
 public sealed class PlanningAuthorityLocationSelection
 {
     public Guid Id { get; set; }

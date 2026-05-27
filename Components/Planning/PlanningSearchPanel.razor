@@ -33,18 +33,25 @@
             }
         </div>
 
-        <PlanningLocationFilter Filter="@LocationFilter"
-                                IsBusy="@(IsSearching || IsFindingLocationAuthorities)"
-                                IsFindingAuthorities="@IsFindingLocationAuthorities"
-                                ErrorMessage="@LocationErrorMessage"
-                                OnFindAuthorities="OnFindLocationAuthorities"
-                                OnClear="OnClearLocationFilter" />
+        <PlanningActiveFilterChips DateFilter="@DateFilter"
+                                   LocationFilter="@LocationFilter"
+                                   IsBusy="@IsSearchBusy"
+                                   OnClearDateFilter="OnClearDateFilter"
+                                   OnClearLocationFilter="OnClearLocationFilter"
+                                   OnClearAllFilters="OnClearAllFilters" />
 
         <div class="planning-search-actions">
+            <button class="secondary-button filter-button" type="button" @onclick="OpenFiltersModal" disabled="@IsSearchBusy" aria-haspopup="dialog">
+                <span>Filters</span>
+                @if (ActiveFilterCount > 0)
+                {
+                    <span class="filter-count">@ActiveFilterCount</span>
+                }
+            </button>
             <button class="secondary-button" type="button" @onclick="OnAddCriterion" disabled="@IsSearching">
                 Add criterion
             </button>
-            <button class="primary-button" type="button" @onclick="SearchAsync" disabled="@IsSearching">
+            <button class="primary-button" type="button" @onclick="SearchAsync" disabled="@IsSearchBusy">
                 @SearchButtonLabel
             </button>
             @if (SearchHasRun)
@@ -64,9 +71,48 @@
     }
 </section>
 
+@if (_isFiltersModalOpen)
+{
+    <PlanningFiltersModal DateFilter="@DateFilter"
+                          LocationFilter="@LocationFilter"
+                          IsBusy="@IsSearchBusy"
+                          OnOpenDates="OpenDateFilterModal"
+                          OnOpenLocation="OpenLocationFilterModal"
+                          OnClearAllFilters="OnClearAllFilters"
+                          OnClose="CloseFilterModals" />
+}
+
+@if (_isDateFilterModalOpen)
+{
+    <PlanningDateRangeFilterModal Filter="@DateFilter"
+                                  IsBusy="@IsSearchBusy"
+                                  OnClear="OnClearDateFilter"
+                                  OnBack="BackToFiltersModal"
+                                  OnClose="CloseFilterModals" />
+}
+
+@if (_isLocationFilterModalOpen)
+{
+    <PlanningLocationFilterModal Filter="@LocationFilter"
+                                 IsBusy="@IsSearchBusy"
+                                 IsFindingAuthorities="@IsFindingLocationAuthorities"
+                                 ErrorMessage="@LocationErrorMessage"
+                                 OnFindAuthorities="OnFindLocationAuthorities"
+                                 OnClear="OnClearLocationFilter"
+                                 OnBack="BackToFiltersModal"
+                                 OnClose="CloseFilterModals" />
+}
+
 @code {
+    private bool _isFiltersModalOpen;
+    private bool _isDateFilterModalOpen;
+    private bool _isLocationFilterModalOpen;
+
     [Parameter]
     public IList<PlanningSearchCriterionInput> Criteria { get; set; } = [];
+
+    [Parameter]
+    public PlanningDateRangeFilterInput DateFilter { get; set; } = new();
 
     [Parameter]
     public PlanningLocationFilterInput LocationFilter { get; set; } = new();
@@ -105,12 +151,22 @@
     public EventCallback OnClear { get; set; }
 
     [Parameter]
+    public EventCallback OnClearDateFilter { get; set; }
+
+    [Parameter]
     public EventCallback OnFindLocationAuthorities { get; set; }
 
     [Parameter]
     public EventCallback OnClearLocationFilter { get; set; }
 
+    [Parameter]
+    public EventCallback OnClearAllFilters { get; set; }
+
     private string SearchButtonLabel => IsSearching ? "Searching..." : "Search";
+
+    private bool IsSearchBusy => IsSearching || IsFindingLocationAuthorities;
+
+    private int ActiveFilterCount => (DateFilter.HasActive ? 1 : 0) + (LocationFilter.HasResolved ? 1 : 0);
 
     private Task SearchAsync()
     {
@@ -132,6 +188,41 @@
         return string.Equals(args.Key, "Enter", StringComparison.OrdinalIgnoreCase)
             ? SearchAsync()
             : Task.CompletedTask;
+    }
+
+    private void OpenFiltersModal()
+    {
+        _isFiltersModalOpen = true;
+        _isDateFilterModalOpen = false;
+        _isLocationFilterModalOpen = false;
+    }
+
+    private void OpenDateFilterModal()
+    {
+        _isFiltersModalOpen = false;
+        _isDateFilterModalOpen = true;
+        _isLocationFilterModalOpen = false;
+    }
+
+    private void OpenLocationFilterModal()
+    {
+        _isFiltersModalOpen = false;
+        _isDateFilterModalOpen = false;
+        _isLocationFilterModalOpen = true;
+    }
+
+    private void BackToFiltersModal()
+    {
+        _isFiltersModalOpen = true;
+        _isDateFilterModalOpen = false;
+        _isLocationFilterModalOpen = false;
+    }
+
+    private void CloseFilterModals()
+    {
+        _isFiltersModalOpen = false;
+        _isDateFilterModalOpen = false;
+        _isLocationFilterModalOpen = false;
     }
 
     private static string GetSearchCriterionInputId(int index)

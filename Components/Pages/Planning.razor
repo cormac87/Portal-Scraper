@@ -20,6 +20,7 @@
                       DocumentTotalCount="@_documentTotalCount" />
 
 <PlanningSearchPanel Criteria="@_searchCriteria"
+                     DateFilter="@_dateFilter"
                      LocationFilter="@_locationFilter"
                      IsSearching="@_isSearching"
                      IsFindingLocationAuthorities="@_isFindingLocationAuthorities"
@@ -31,8 +32,10 @@
                      OnAddCriterion="AddSearchCriterion"
                      OnRemoveCriterion="RemoveSearchCriterion"
                      OnOpenSettings="OpenSearchSettingsModal"
+                     OnClearDateFilter="ClearDateFilterAsync"
                      OnFindLocationAuthorities="FindLocationAuthoritiesAsync"
-                     OnClearLocationFilter="ClearLocationFilter"
+                     OnClearLocationFilter="ClearLocationFilterAsync"
+                     OnClearAllFilters="ClearAllFiltersAsync"
                      OnClear="ClearSearch" />
 
 @if (_isSearchSettingsModalOpen && _selectedSearchCriterion is not null)
@@ -112,7 +115,8 @@ else
     private List<PlanningSearchCriterionInput> _searchCriteria = [new()];
     private List<string> _lastSearchConditions = [];
     private List<FullTextSearchCriterion> _lastSearchCriteria = [];
-    private List<Guid>? _lastSearchAuthorityIds;
+    private PlanningApplicationSearchFilters _lastSearchFilters = PlanningApplicationSearchFilters.Empty;
+    private PlanningDateRangeFilterInput _dateFilter = new();
     private PlanningLocationFilterInput _locationFilter = new();
     private WeeklyScrapeResult? _lastResult;
     private int _applicationPage = 1;
@@ -146,7 +150,7 @@ else
         && !_isSearching
         && !_isExporting
         && _searchTotalCount > 0
-        && (_lastSearchConditions.Count > 0 || _lastSearchAuthorityIds is not null);
+        && (_lastSearchConditions.Count > 0 || _lastSearchFilters.HasActive);
     private bool CanShowRelevantDocuments => _selectedApplication?.PlanningDocuments.Count > 0 && GetRelevantDocumentCriteria().Count > 0;
 
     protected override async Task OnInitializedAsync()
@@ -202,10 +206,16 @@ else
     private async Task SearchAsync()
     {
         var searchCriteria = PlanningSearchService.BuildCriteria(_searchCriteria);
-        var authorityFilterIds = GetActiveAuthorityFilterIds();
-        if (searchCriteria.Count == 0 && authorityFilterIds is null)
+        var filters = GetActiveSearchFilters();
+        if (searchCriteria.Count == 0 && !filters.HasActive)
         {
             ClearSearch();
+            return;
+        }
+
+        if (_dateFilter.HasInvalidRange)
+        {
+            _errorMessage = "Start date must be on or before end date.";
             return;
         }
 
@@ -214,12 +224,12 @@ else
         _searchPage = 1;
         _searchTotalCount = 0;
         _searchResults = [];
-        _lastSearchText = BuildSearchSummary(searchCriteria, authorityFilterIds);
+        _lastSearchText = BuildSearchSummary(searchCriteria, filters);
         _lastSearchConditions = searchCriteria
             .Select(criterion => criterion.SearchCondition)
             .ToList();
         _lastSearchCriteria = searchCriteria;
-        _lastSearchAuthorityIds = authorityFilterIds?.ToList();
+        _lastSearchFilters = filters;
         _errorMessage = null;
 
         await LoadSearchPageAsync();
@@ -227,7 +237,7 @@ else
 
     private async Task LoadSearchPageAsync()
     {
-        if (_lastSearchCriteria.Count == 0 && _lastSearchAuthorityIds is null)
+        if (_lastSearchCriteria.Count == 0 && !_lastSearchFilters.HasActive)
         {
             ClearSearch();
             return;
@@ -242,7 +252,7 @@ else
                 _lastSearchCriteria,
                 _searchPage,
                 SearchPageSize,
-                _lastSearchAuthorityIds);
+                _lastSearchFilters);
             if (!searchPage.IsFullTextSearchAvailable)
             {
                 _searchHasRun = false;
@@ -275,7 +285,7 @@ else
         _searchTotalCount = 0;
         _lastSearchConditions = [];
         _lastSearchCriteria = [];
-        _lastSearchAuthorityIds = null;
+        _lastSearchFilters = PlanningApplicationSearchFilters.Empty;
         _lastSearchText = null;
     }
 
@@ -315,10 +325,33 @@ else
         }
     }
 
-    private void ClearLocationFilter()
+    private async Task ClearDateFilterAsync()
+    {
+        _dateFilter = new PlanningDateRangeFilterInput();
+        await ReloadSearchAfterFilterChangeAsync();
+    }
+
+    private async Task ClearLocationFilterAsync()
     {
         _locationFilter = new PlanningLocationFilterInput();
         _locationErrorMessage = null;
+        await ReloadSearchAfterFilterChangeAsync();
+    }
+
+    private async Task ClearAllFiltersAsync()
+    {
+        _dateFilter = new PlanningDateRangeFilterInput();
+        _locationFilter = new PlanningLocationFilterInput();
+        _locationErrorMessage = null;
+        await ReloadSearchAfterFilterChangeAsync();
+    }
+
+    private async Task ReloadSearchAfterFilterChangeAsync()
+    {
+        if (_searchHasRun)
+        {
+            await SearchAsync();
+        }
     }
 
     private void AddSearchCriterion()
@@ -375,7 +408,7 @@ else
 
     private async Task ExportSearchResultsAsync(PlanningApplicationExportSelection selection)
     {
-        if (_lastSearchConditions.Count == 0 && _lastSearchAuthorityIds is null)
+        if (_lastSearchConditions.Count == 0 && !_lastSearchFilters.HasActive)
         {
             _isExportColumnsModalOpen = false;
             return;
@@ -391,7 +424,9 @@ else
                 _lastSearchConditions.ToList(),
                 selection.ColumnKeys,
                 selection.CustomColumns,
-                _lastSearchAuthorityIds?.ToList()));
+                _lastSearchFilters.PlanningAuthorityIds?.ToList(),
+                _lastSearchFilters.StartDate,
+                _lastSearchFilters.EndDate));
 
             using var stream = new MemoryStream(result.Content);
             using var streamReference = new DotNetStreamReference(stream);
@@ -528,16 +563,21 @@ else
             : PlanningSearchService.BuildCriteria(_searchCriteria);
     }
 
-    private List<Guid>? GetActiveAuthorityFilterIds()
+    private PlanningApplicationSearchFilters GetActiveSearchFilters()
     {
-        return _locationFilter.HasResolved
+        var authorityFilterIds = _locationFilter.HasResolved
             ? _locationFilter.SelectedAuthorityIds.ToList()
             : null;
+
+        return new PlanningApplicationSearchFilters(
+            authorityFilterIds,
+            _dateFilter.StartDate,
+            _dateFilter.EndDate);
     }
 
     private string BuildSearchSummary(
         IReadOnlyList<FullTextSearchCriterion> criteria,
-        IReadOnlyList<Guid>? authorityFilterIds)
+        PlanningApplicationSearchFilters filters)
     {
         var parts = new List<string>();
         if (criteria.Count > 0)
@@ -545,14 +585,39 @@ else
             parts.Add(PlanningSearchService.FormatCriteriaSummary(criteria));
         }
 
-        if (authorityFilterIds is not null)
+        if (filters.StartDate.HasValue || filters.EndDate.HasValue)
         {
-            parts.Add($"{authorityFilterIds.Count} of {_locationFilter.Authorities.Count} authorities near {_locationFilter.Postcode.Trim()}");
+            parts.Add(BuildDateFilterSummary(filters.StartDate, filters.EndDate));
+        }
+
+        if (filters.PlanningAuthorityIds is not null)
+        {
+            var postcode = _locationFilter.Postcode.Trim();
+            parts.Add(string.IsNullOrWhiteSpace(postcode)
+                ? $"{filters.PlanningAuthorityIds.Count} of {_locationFilter.Authorities.Count} authorities"
+                : $"{filters.PlanningAuthorityIds.Count} of {_locationFilter.Authorities.Count} authorities near {postcode}");
         }
 
         return parts.Count == 0
             ? "planning applications"
             : string.Join(" + ", parts);
+    }
+
+    private static string BuildDateFilterSummary(DateTime? startDate, DateTime? endDate)
+    {
+        if (startDate.HasValue && endDate.HasValue)
+        {
+            return $"{PlanningDisplayFormatter.FormatDate(startDate)} to {PlanningDisplayFormatter.FormatDate(endDate)}";
+        }
+
+        if (startDate.HasValue)
+        {
+            return $"from {PlanningDisplayFormatter.FormatDate(startDate)}";
+        }
+
+        return endDate.HasValue
+            ? $"until {PlanningDisplayFormatter.FormatDate(endDate)}"
+            : "dates";
     }
 
     private string GetSearchCriterionSettingsContext(PlanningSearchCriterionInput criterion)

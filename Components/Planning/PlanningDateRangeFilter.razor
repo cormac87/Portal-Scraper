@@ -1,0 +1,141 @@
+@using System.Globalization
+
+<div class="planning-date-filter">
+    <div class="date-picker-button-grid">
+        <button class="@GetPickerButtonClass(DatePicker.Start)" type="button" @onclick="() => TogglePicker(DatePicker.Start)" disabled="@IsBusy" aria-expanded="@IsPickerOpen(DatePicker.Start)">
+            <span>Start date</span>
+            <strong>@FormatButtonDate(Filter.StartDate, "Any start")</strong>
+        </button>
+        <button class="@GetPickerButtonClass(DatePicker.End)" type="button" @onclick="() => TogglePicker(DatePicker.End)" disabled="@IsBusy" aria-expanded="@IsPickerOpen(DatePicker.End)">
+            <span>End date</span>
+            <strong>@FormatButtonDate(Filter.EndDate, "Any end")</strong>
+        </button>
+    </div>
+
+    @if (_openPicker == DatePicker.Start)
+    {
+        <div class="date-picker-panel">
+            <label>
+                <span class="field-label">Start date</span>
+                <input class="text-input"
+                       type="date"
+                       value="@FormatDateInput(Filter.StartDate)"
+                       @onchange="SetStartDate"
+                       disabled="@IsBusy" />
+            </label>
+            @if (Filter.StartDate.HasValue)
+            {
+                <button class="secondary-button" type="button" @onclick="ClearStartDate" disabled="@IsBusy">
+                    Clear start
+                </button>
+            }
+        </div>
+    }
+    else if (_openPicker == DatePicker.End)
+    {
+        <div class="date-picker-panel">
+            <label>
+                <span class="field-label">End date</span>
+                <input class="text-input"
+                       type="date"
+                       value="@FormatDateInput(Filter.EndDate)"
+                       @onchange="SetEndDate"
+                       disabled="@IsBusy" />
+            </label>
+            @if (Filter.EndDate.HasValue)
+            {
+                <button class="secondary-button" type="button" @onclick="ClearEndDate" disabled="@IsBusy">
+                    Clear end
+                </button>
+            }
+        </div>
+    }
+
+    @if (Filter.HasInvalidRange)
+    {
+        <p class="error-message">Start date must be on or before end date.</p>
+    }
+</div>
+
+@code {
+    private DatePicker? _openPicker;
+
+    [Parameter]
+    public PlanningDateRangeFilterInput Filter { get; set; } = new();
+
+    [Parameter]
+    public bool IsBusy { get; set; }
+
+    private void TogglePicker(DatePicker picker)
+    {
+        _openPicker = _openPicker == picker ? null : picker;
+    }
+
+    private bool IsPickerOpen(DatePicker picker)
+    {
+        return _openPicker == picker;
+    }
+
+    private string GetPickerButtonClass(DatePicker picker)
+    {
+        return _openPicker == picker
+            ? "date-picker-button active"
+            : "date-picker-button";
+    }
+
+    private void SetStartDate(ChangeEventArgs args)
+    {
+        Filter.StartDate = ParseDate(args.Value);
+    }
+
+    private void SetEndDate(ChangeEventArgs args)
+    {
+        Filter.EndDate = ParseDate(args.Value);
+    }
+
+    private void ClearStartDate()
+    {
+        Filter.StartDate = null;
+    }
+
+    private void ClearEndDate()
+    {
+        Filter.EndDate = null;
+    }
+
+    private static DateTime? ParseDate(object? value)
+    {
+        var text = Convert.ToString(value, CultureInfo.InvariantCulture);
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return null;
+        }
+
+        return DateTime.TryParseExact(
+            text,
+            "yyyy-MM-dd",
+            CultureInfo.InvariantCulture,
+            DateTimeStyles.None,
+            out var date)
+            ? date.Date
+            : null;
+    }
+
+    private static string FormatDateInput(DateTime? value)
+    {
+        return value?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) ?? string.Empty;
+    }
+
+    private static string FormatButtonDate(DateTime? value, string fallback)
+    {
+        return value.HasValue
+            ? value.Value.ToString("dd MMM yyyy", CultureInfo.InvariantCulture)
+            : fallback;
+    }
+
+    private enum DatePicker
+    {
+        Start,
+        End
+    }
+}

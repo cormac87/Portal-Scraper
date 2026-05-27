@@ -1,0 +1,57 @@
+<div class="modal-backdrop modal-backdrop-top" @onclick="OnClose">
+    <section class="modal-panel filter-detail-modal location-filter-modal" role="dialog" aria-modal="true" aria-labelledby="location-filter-modal-title" @onclick:stopPropagation="true">
+        <header class="modal-header">
+            <div>
+                <p class="planning-authority">Filters</p>
+                <h2 id="location-filter-modal-title">Location</h2>
+            </div>
+            <button class="secondary-button" type="button" @onclick="OnClose">Close</button>
+        </header>
+
+        <PlanningLocationFilter Filter="@Filter"
+                                IsBusy="@IsBusy"
+                                IsFindingAuthorities="@IsFindingAuthorities"
+                                ErrorMessage="@ErrorMessage"
+                                OnFindAuthorities="OnFindAuthorities"
+                                OnClear="OnClear" />
+
+        <footer class="modal-actions filter-modal-actions">
+            <div>
+                <button class="secondary-button" type="button" @onclick="OnBack">Filters</button>
+                @if (Filter.HasResolved)
+                {
+                    <button class="danger-button" type="button" @onclick="OnClear" disabled="@IsBusy">
+                        Clear location
+                    </button>
+                }
+            </div>
+            <button class="primary-button" type="button" @onclick="OnClose">Done</button>
+        </footer>
+    </section>
+</div>
+
+@code {
+    [Parameter]
+    public PlanningLocationFilterInput Filter { get; set; } = new();
+
+    [Parameter]
+    public bool IsBusy { get; set; }
+
+    [Parameter]
+    public bool IsFindingAuthorities { get; set; }
+
+    [Parameter]
+    public string? ErrorMessage { get; set; }
+
+    [Parameter]
+    public EventCallback OnFindAuthorities { get; set; }
+
+    [Parameter]
+    public EventCallback OnClear { get; set; }
+
+    [Parameter]
+    public EventCallback OnBack { get; set; }
+
+    [Parameter]
+    public EventCallback OnClose { get; set; }
+}

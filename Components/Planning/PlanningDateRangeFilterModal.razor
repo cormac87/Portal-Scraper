@@ -1,0 +1,44 @@
+<div class="modal-backdrop modal-backdrop-top" @onclick="OnClose">
+    <section class="modal-panel filter-detail-modal" role="dialog" aria-modal="true" aria-labelledby="date-filter-modal-title" @onclick:stopPropagation="true">
+        <header class="modal-header">
+            <div>
+                <p class="planning-authority">Filters</p>
+                <h2 id="date-filter-modal-title">Dates</h2>
+            </div>
+            <button class="secondary-button" type="button" @onclick="OnClose">Close</button>
+        </header>
+
+        <PlanningDateRangeFilter Filter="@Filter"
+                                 IsBusy="@IsBusy" />
+
+        <footer class="modal-actions filter-modal-actions">
+            <div>
+                <button class="secondary-button" type="button" @onclick="OnBack">Filters</button>
+                @if (Filter.HasActive)
+                {
+                    <button class="danger-button" type="button" @onclick="OnClear" disabled="@IsBusy">
+                        Clear dates
+                    </button>
+                }
+            </div>
+            <button class="primary-button" type="button" @onclick="OnClose">Done</button>
+        </footer>
+    </section>
+</div>
+
+@code {
+    [Parameter]
+    public PlanningDateRangeFilterInput Filter { get; set; } = new();
+
+    [Parameter]
+    public bool IsBusy { get; set; }
+
+    [Parameter]
+    public EventCallback OnClear { get; set; }
+
+    [Parameter]
+    public EventCallback OnBack { get; set; }
+
+    [Parameter]
+    public EventCallback OnClose { get; set; }
+}

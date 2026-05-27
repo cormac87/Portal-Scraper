@@ -1,0 +1,86 @@
+@using System.Globalization
+
+@if (HasActiveFilters)
+{
+    <div class="active-filter-chips" aria-label="Active planning filters">
+        @if (DateFilter.HasActive)
+        {
+            <button class="filter-chip" type="button" @onclick="OnClearDateFilter" disabled="@IsBusy" title="Clear date filter">
+                <span>@DateFilterSummary</span>
+                <span aria-hidden="true">&times;</span>
+            </button>
+        }
+
+        @if (LocationFilter.HasResolved)
+        {
+            <button class="filter-chip" type="button" @onclick="OnClearLocationFilter" disabled="@IsBusy" title="Clear location filter">
+                <span>@LocationFilterSummary</span>
+                <span aria-hidden="true">&times;</span>
+            </button>
+        }
+
+        <button class="secondary-button compact-button" type="button" @onclick="OnClearAllFilters" disabled="@IsBusy">
+            Clear filters
+        </button>
+    </div>
+}
+
+@code {
+    [Parameter]
+    public PlanningDateRangeFilterInput DateFilter { get; set; } = new();
+
+    [Parameter]
+    public PlanningLocationFilterInput LocationFilter { get; set; } = new();
+
+    [Parameter]
+    public bool IsBusy { get; set; }
+
+    [Parameter]
+    public EventCallback OnClearDateFilter { get; set; }
+
+    [Parameter]
+    public EventCallback OnClearLocationFilter { get; set; }
+
+    [Parameter]
+    public EventCallback OnClearAllFilters { get; set; }
+
+    private bool HasActiveFilters => DateFilter.HasActive || LocationFilter.HasResolved;
+
+    private string DateFilterSummary
+    {
+        get
+        {
+            if (DateFilter.StartDate.HasValue && DateFilter.EndDate.HasValue)
+            {
+                return $"Dates: {FormatDate(DateFilter.StartDate.Value)} to {FormatDate(DateFilter.EndDate.Value)}";
+            }
+
+            if (DateFilter.StartDate.HasValue)
+            {
+                return $"Dates: from {FormatDate(DateFilter.StartDate.Value)}";
+            }
+
+            return DateFilter.EndDate.HasValue
+                ? $"Dates: until {FormatDate(DateFilter.EndDate.Value)}"
+                : "Dates";
+        }
+    }
+
+    private string LocationFilterSummary
+    {
+        get
+        {
+            var selectedCount = LocationFilter.SelectedAuthorityIds.Count;
+            var postcode = LocationFilter.Postcode.Trim();
+
+            return string.IsNullOrWhiteSpace(postcode)
+                ? $"Location: {selectedCount} of {LocationFilter.Authorities.Count} authorities"
+                : $"Location: {selectedCount} of {LocationFilter.Authorities.Count} near {postcode}";
+        }
+    }
+
+    private static string FormatDate(DateTime value)
+    {
+        return value.ToString("dd MMM yyyy", CultureInfo.InvariantCulture);
+    }
+}

@@ -84,8 +84,8 @@ SELECT CAST(
         PlanningApplicationExcelExportRequest request,
         CancellationToken cancellationToken = default)
     {
-        var authorityFilterIds = NormalizeAuthorityFilter(request.PlanningAuthorityIds);
-        if (request.SearchConditions.Count == 0 && authorityFilterIds is null)
+        var exportFilters = NormalizeFilters(request.PlanningAuthorityIds, request.StartDate, request.EndDate);
+        if (request.SearchConditions.Count == 0 && !exportFilters.HasActive)
         {
             throw new InvalidOperationException("Run a search before exporting planning results.");
         }
@@ -102,7 +102,7 @@ SELECT CAST(
         }
 
         List<PlanningApplicationExportRow> rows;
-        if (authorityFilterIds is { Count: 0 })
+        if (exportFilters.HasEmptyAuthorityFilter)
         {
             rows = [];
         }
@@ -116,11 +116,11 @@ SELECT CAST(
                     throw new InvalidOperationException("Keyword search export requires SQL Server Full-Text Search and the planning full-text indexes.");
                 }
 
-                rows = await ExecuteExportSearchAsync(db, request.SearchConditions, authorityFilterIds, cancellationToken);
+                rows = await ExecuteExportSearchAsync(db, request.SearchConditions, exportFilters, cancellationToken);
             }
             else
             {
-                rows = await ExecuteAuthorityFilteredExportAsync(db, authorityFilterIds!, cancellationToken);
+                rows = await ExecuteFilteredExportAsync(db, exportFilters, cancellationToken);
             }
         }
 
@@ -130,14 +130,22 @@ SELECT CAST(
         return new PlanningApplicationExcelExportResult(fileName, ExcelContentType, content);
     }
 
-    private static List<Guid>? NormalizeAuthorityFilter(IReadOnlyCollection<Guid>? planningAuthorityIds)
+    private static NormalizedExportFilters NormalizeFilters(
+        IReadOnlyCollection<Guid>? planningAuthorityIds,
+        DateTime? startDate,
+        DateTime? endDate)
     {
-        return planningAuthorityIds is null
+        var authorityIds = planningAuthorityIds is null
             ? null
             : planningAuthorityIds
                 .Where(id => id != Guid.Empty)
                 .Distinct()
                 .ToList();
+
+        return new NormalizedExportFilters(
+            authorityIds,
+            startDate?.Date,
+            endDate?.Date.AddDays(1));
     }
 
     private static List<PlanningApplicationExportColumn> GetSelectedColumns(IReadOnlyList<string> columnKeys)
@@ -192,15 +200,14 @@ SELECT CAST(
         }
     }
 
-    private static Task<List<PlanningApplicationExportRow>> ExecuteAuthorityFilteredExportAsync(
+    private static Task<List<PlanningApplicationExportRow>> ExecuteFilteredExportAsync(
         ApplicationDbContext db,
-        IReadOnlyList<Guid> authorityFilterIds,
+        NormalizedExportFilters filters,
         CancellationToken cancellationToken)
     {
-        return db.PlanningApplications
+        return ApplyApplicationFilters(db.PlanningApplications
             .AsNoTracking()
-            .Include(application => application.PlanningAuthority)
-            .Where(application => authorityFilterIds.Contains(application.PlanningAuthorityId))
+            .Include(application => application.PlanningAuthority), filters)
             .OrderByDescending(application => application.ValidatedDate)
             .ThenByDescending(application => application.ReceivedDate)
             .ThenBy(application => application.ApplicationReference)
@@ -228,10 +235,34 @@ SELECT CAST(
             .ToListAsync(cancellationToken);
     }
 
+    private static IQueryable<PlanningApplication> ApplyApplicationFilters(
+        IQueryable<PlanningApplication> query,
+        NormalizedExportFilters filters)
+    {
+        if (filters.AuthorityIds is not null)
+        {
+            query = query.Where(application => filters.AuthorityIds.Contains(application.PlanningAuthorityId));
+        }
+
+        if (filters.StartDateInclusive.HasValue)
+        {
+            query = query.Where(application =>
+                (application.ValidatedDate ?? application.ReceivedDate) >= filters.StartDateInclusive.Value);
+        }
+
+        if (filters.EndDateExclusive.HasValue)
+        {
+            query = query.Where(application =>
+                (application.ValidatedDate ?? application.ReceivedDate) < filters.EndDateExclusive.Value);
+        }
+
+        return query;
+    }
+
     private static async Task<List<PlanningApplicationExportRow>> ExecuteExportSearchAsync(
         ApplicationDbContext db,
         IReadOnlyList<string> searchConditions,
-        IReadOnlyList<Guid>? authorityFilterIds,
+        NormalizedExportFilters filters,
         CancellationToken cancellationToken)
     {
         var rows = new List<PlanningApplicationExportRow>();
@@ -246,9 +277,9 @@ SELECT CAST(
         try
         {
             await using var command = connection.CreateCommand();
-            command.CommandText = BuildExportSearchSql(searchConditions.Count, authorityFilterIds);
+            command.CommandText = BuildExportSearchSql(searchConditions.Count, filters);
             AddSearchConditionParameters(command, searchConditions);
-            AddAuthorityFilterParameters(command, authorityFilterIds);
+            AddFilterParameters(command, filters);
             AddParameter(command, "@SearchCriteriaCount", searchConditions.Count);
 
             await using var reader = await command.ExecuteReaderAsync(cancellationToken);
@@ -286,7 +317,7 @@ SELECT CAST(
         return rows;
     }
 
-    private static string BuildExportSearchSql(int searchCriteriaCount, IReadOnlyList<Guid>? authorityFilterIds)
+    private static string BuildExportSearchSql(int searchCriteriaCount, NormalizedExportFilters filters)
     {
         var sql = new StringBuilder();
         AppendMatchedApplicationsCte(sql, searchCriteriaCount);
@@ -323,7 +354,7 @@ FROM [RankedApplications]
     INNER JOIN [dbo].[PlanningAuthority] AS [authority]
         ON [authority].[Id] = [application].[PlanningAuthorityId]
 ");
-        AppendAuthorityFilterWhereClause(sql, authorityFilterIds);
+        AppendApplicationFilterWhereClause(sql, filters);
         sql.AppendLine(@"ORDER BY [RankedApplications].[SearchRank] DESC,
     [application].[ValidatedDate] DESC,
     [application].[ReceivedDate] DESC,
@@ -508,31 +539,53 @@ FROM [RankedApplications]
         }
     }
 
-    private static void AddAuthorityFilterParameters(DbCommand command, IReadOnlyList<Guid>? authorityFilterIds)
+    private static void AddFilterParameters(DbCommand command, NormalizedExportFilters filters)
     {
-        if (authorityFilterIds is null)
+        if (filters.AuthorityIds is not null)
         {
-            return;
+            for (var index = 0; index < filters.AuthorityIds.Count; index++)
+            {
+                AddParameter(command, $"@AuthorityId{index}", filters.AuthorityIds[index]);
+            }
         }
 
-        for (var index = 0; index < authorityFilterIds.Count; index++)
+        if (filters.StartDateInclusive.HasValue)
         {
-            AddParameter(command, $"@AuthorityId{index}", authorityFilterIds[index]);
+            AddParameter(command, "@ApplicationDateStart", filters.StartDateInclusive.Value);
+        }
+
+        if (filters.EndDateExclusive.HasValue)
+        {
+            AddParameter(command, "@ApplicationDateEndExclusive", filters.EndDateExclusive.Value);
         }
     }
 
-    private static void AppendAuthorityFilterWhereClause(StringBuilder sql, IReadOnlyList<Guid>? authorityFilterIds)
+    private static void AppendApplicationFilterWhereClause(StringBuilder sql, NormalizedExportFilters filters)
     {
-        if (authorityFilterIds is null)
+        var conditions = new List<string>();
+        if (filters.AuthorityIds is not null)
         {
-            return;
+            var parameterNames = Enumerable
+                .Range(0, filters.AuthorityIds.Count)
+                .Select(index => $"@AuthorityId{index}");
+
+            conditions.Add($"[application].[PlanningAuthorityId] IN ({string.Join(", ", parameterNames)})");
         }
 
-        var parameterNames = Enumerable
-            .Range(0, authorityFilterIds.Count)
-            .Select(index => $"@AuthorityId{index}");
+        if (filters.StartDateInclusive.HasValue)
+        {
+            conditions.Add("COALESCE([application].[ValidatedDate], [application].[ReceivedDate]) >= @ApplicationDateStart");
+        }
 
-        sql.AppendLine($"WHERE [application].[PlanningAuthorityId] IN ({string.Join(", ", parameterNames)})");
+        if (filters.EndDateExclusive.HasValue)
+        {
+            conditions.Add("COALESCE([application].[ValidatedDate], [application].[ReceivedDate]) < @ApplicationDateEndExclusive");
+        }
+
+        if (conditions.Count > 0)
+        {
+            sql.AppendLine($"WHERE {string.Join(" AND ", conditions)}");
+        }
     }
 
     private static string? GetNullableString(DbDataReader reader, string name)
@@ -550,6 +603,18 @@ FROM [RankedApplications]
     private static string? FormatDate(DateTime? value)
     {
         return value?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+    }
+
+    private sealed record NormalizedExportFilters(
+        IReadOnlyList<Guid>? AuthorityIds,
+        DateTime? StartDateInclusive,
+        DateTime? EndDateExclusive)
+    {
+        public bool HasActive => AuthorityIds is not null
+            || StartDateInclusive.HasValue
+            || EndDateExclusive.HasValue;
+
+        public bool HasEmptyAuthorityFilter => AuthorityIds is { Count: 0 };
     }
 
     private sealed class PlanningApplicationExportRow

@@ -20,6 +20,16 @@ public sealed class FullTextSearchCriterion
     public bool RequireAdjacentWords { get; set; }
 }
 
+public sealed record PlanningApplicationSearchFilters(
+    IReadOnlyCollection<Guid>? PlanningAuthorityIds = null,
+    DateTime? StartDate = null,
+    DateTime? EndDate = null)
+{
+    public static PlanningApplicationSearchFilters Empty { get; } = new();
+
+    public bool HasActive => PlanningAuthorityIds is not null || StartDate.HasValue || EndDate.HasValue;
+}
+
 public sealed record PlanningKeywordSearchPage(
     IReadOnlyList<PlanningSearchResult> Results,
     int TotalCount,

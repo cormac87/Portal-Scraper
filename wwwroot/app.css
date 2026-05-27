@@ -370,6 +370,57 @@ code {
     flex-wrap: wrap;
 }
 
+.filter-button {
+    display: inline-flex;
+    gap: 0.5rem;
+    align-items: center;
+}
+
+.filter-count {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 1.45rem;
+    height: 1.45rem;
+    border-radius: 999px;
+    padding: 0 0.4rem;
+    background: #0f766e;
+    color: #fff;
+    font-size: 0.82rem;
+    line-height: 1;
+}
+
+.active-filter-chips {
+    display: flex;
+    gap: 0.55rem;
+    align-items: center;
+    flex-wrap: wrap;
+    min-width: 0;
+}
+
+.filter-chip {
+    display: inline-flex;
+    gap: 0.45rem;
+    align-items: center;
+    max-width: 100%;
+    border: 1px solid rgba(13, 148, 136, 0.28);
+    border-radius: 999px;
+    padding: 0.45rem 0.7rem;
+    background: #fff;
+    color: #0f766e;
+    font: inherit;
+    font-weight: 700;
+    cursor: pointer;
+}
+
+.filter-chip span:first-child {
+    overflow-wrap: anywhere;
+}
+
+.compact-button {
+    padding: 0.45rem 0.75rem;
+}
+
 .planning-location-filter {
     display: grid;
     gap: 0.7rem;
@@ -675,6 +726,15 @@ code {
     width: min(34rem, 100%);
 }
 
+.filters-modal,
+.filter-detail-modal {
+    width: min(38rem, 100%);
+}
+
+.location-filter-modal {
+    width: min(54rem, 100%);
+}
+
 .export-columns-modal {
     width: min(58rem, 100%);
 }
@@ -748,6 +808,86 @@ code {
 .search-settings-options {
     display: grid;
     gap: 0.75rem;
+}
+
+.filter-choice-grid,
+.planning-date-filter {
+    display: grid;
+    gap: 0.85rem;
+}
+
+.filter-choice-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.filter-choice-button,
+.date-picker-button {
+    display: grid;
+    gap: 0.25rem;
+    min-width: 0;
+    border: 1px solid rgba(13, 148, 136, 0.18);
+    border-radius: 0.75rem;
+    padding: 0.9rem;
+    background: rgba(248, 250, 252, 0.95);
+    color: #24344d;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+}
+
+.filter-choice-button:hover,
+.date-picker-button:hover,
+.date-picker-button.active {
+    border-color: rgba(13, 148, 136, 0.45);
+    background: rgba(13, 148, 136, 0.08);
+}
+
+.filter-choice-button strong,
+.date-picker-button strong {
+    overflow-wrap: anywhere;
+    font-size: 1rem;
+}
+
+.filter-choice-button span,
+.date-picker-button span {
+    color: var(--muted);
+    font-size: 0.92rem;
+    font-weight: 700;
+}
+
+.date-picker-button-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.75rem;
+}
+
+.date-picker-panel {
+    display: flex;
+    gap: 0.75rem;
+    align-items: end;
+    flex-wrap: wrap;
+    min-width: 0;
+    padding: 0.85rem;
+    border: 1px solid var(--border);
+    border-radius: 0.75rem;
+    background: rgba(248, 250, 252, 0.95);
+}
+
+.date-picker-panel label {
+    display: grid;
+    gap: 0.35rem;
+    min-width: min(16rem, 100%);
+}
+
+.filter-modal-actions {
+    justify-content: space-between;
+}
+
+.filter-modal-actions div {
+    display: flex;
+    gap: 0.75rem;
+    align-items: center;
+    flex-wrap: wrap;
 }
 
 .setting-checkbox {
@@ -1017,7 +1157,9 @@ code {
     }
 
     .planning-location-fields,
-    .authority-geocache-row {
+    .authority-geocache-row,
+    .filter-choice-grid,
+    .date-picker-button-grid {
         grid-template-columns: 1fr;
     }
 

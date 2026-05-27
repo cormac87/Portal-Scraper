@@ -1,0 +1,63 @@
+<div class="modal-backdrop" @onclick="OnClose">
+    <section class="modal-panel filters-modal" role="dialog" aria-modal="true" aria-labelledby="filters-modal-title" @onclick:stopPropagation="true">
+        <header class="modal-header">
+            <div>
+                <p class="planning-authority">Planning search</p>
+                <h2 id="filters-modal-title">Filters</h2>
+            </div>
+            <button class="secondary-button" type="button" @onclick="OnClose">Close</button>
+        </header>
+
+        <div class="filter-choice-grid">
+            <button class="filter-choice-button" type="button" @onclick="OnOpenDates">
+                <strong>Dates</strong>
+                <span>@DateStatus</span>
+            </button>
+            <button class="filter-choice-button" type="button" @onclick="OnOpenLocation">
+                <strong>Location</strong>
+                <span>@LocationStatus</span>
+            </button>
+        </div>
+
+        <footer class="modal-actions filter-modal-actions">
+            <div>
+                @if (HasActiveFilters)
+                {
+                    <button class="danger-button" type="button" @onclick="OnClearAllFilters" disabled="@IsBusy">
+                        Clear filters
+                    </button>
+                }
+            </div>
+            <button class="primary-button" type="button" @onclick="OnClose">Done</button>
+        </footer>
+    </section>
+</div>
+
+@code {
+    [Parameter]
+    public PlanningDateRangeFilterInput DateFilter { get; set; } = new();
+
+    [Parameter]
+    public PlanningLocationFilterInput LocationFilter { get; set; } = new();
+
+    [Parameter]
+    public bool IsBusy { get; set; }
+
+    [Parameter]
+    public EventCallback OnOpenDates { get; set; }
+
+    [Parameter]
+    public EventCallback OnOpenLocation { get; set; }
+
+    [Parameter]
+    public EventCallback OnClearAllFilters { get; set; }
+
+    [Parameter]
+    public EventCallback OnClose { get; set; }
+
+    private bool HasActiveFilters => DateFilter.HasActive || LocationFilter.HasResolved;
+
+    private string DateStatus => DateFilter.HasActive ? "Active" : "Off";
+
+    private string LocationStatus => LocationFilter.HasResolved ? "Active" : "Off";
+}

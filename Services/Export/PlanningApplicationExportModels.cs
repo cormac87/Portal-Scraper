@@ -12,7 +12,9 @@ public sealed record PlanningApplicationExcelExportRequest(
     IReadOnlyList<string> SearchConditions,
     IReadOnlyList<string> ColumnKeys,
     IReadOnlyList<PlanningApplicationExportCustomColumn> CustomColumns,
-    IReadOnlyList<Guid>? PlanningAuthorityIds = null);
+    IReadOnlyList<Guid>? PlanningAuthorityIds = null,
+    DateTime? StartDate = null,
+    DateTime? EndDate = null);
 
 public sealed record PlanningApplicationExcelExportResult(
     string FileName,
