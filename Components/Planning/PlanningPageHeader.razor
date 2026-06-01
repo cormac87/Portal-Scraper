@@ -10,6 +10,9 @@
         <button class="primary-button" type="button" @onclick="OnScrape" disabled="@IsScraping">
             @ScrapeButtonLabel
         </button>
+        <button class="secondary-button" type="button" @onclick="OnScrapeThisWeek" disabled="@IsScraping">
+            @ScrapeThisWeekButtonLabel
+        </button>
     </div>
 </section>
 
@@ -21,10 +24,21 @@
     public bool IsScraping { get; set; }
 
     [Parameter]
+    public bool IsScrapingWeekly { get; set; }
+
+    [Parameter]
+    public bool IsScrapingThisWeek { get; set; }
+
+    [Parameter]
     public EventCallback OnExport { get; set; }
 
     [Parameter]
     public EventCallback OnScrape { get; set; }
 
-    private string ScrapeButtonLabel => IsScraping ? "Scraping weekly..." : "Scrape Weekly";
+    [Parameter]
+    public EventCallback OnScrapeThisWeek { get; set; }
+
+    private string ScrapeButtonLabel => IsScrapingWeekly ? "Scraping weekly..." : "Scrape Weekly";
+
+    private string ScrapeThisWeekButtonLabel => IsScrapingThisWeek ? "Scraping this week..." : "Scrape This Week";
 }

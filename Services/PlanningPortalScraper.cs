@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Globalization;
 using System.Net;
 using System.Net.Http.Headers;
@@ -16,6 +17,8 @@ namespace PortalScraper.Services;
 public interface IPlanningPortalScraper
 {
     Task<WeeklyScrapeResult> ScrapeWeeklyAsync(CancellationToken cancellationToken = default);
+
+    Task<WeeklyScrapeResult> ScrapeThisWeekAsync(CancellationToken cancellationToken = default);
 }
 
 public sealed record WeeklyScrapeResult(
@@ -40,24 +43,45 @@ public sealed class PlanningPortalScraper(
     private static readonly Regex WhitespaceRegex = new(@"\s+", RegexOptions.Compiled);
     private static readonly TimeSpan DefaultTooManyRequestsRetryDelay = TimeSpan.FromMinutes(1);
 
-    public async Task<WeeklyScrapeResult> ScrapeWeeklyAsync(CancellationToken cancellationToken = default)
+    public Task<WeeklyScrapeResult> ScrapeWeeklyAsync(CancellationToken cancellationToken = default)
+    {
+        return ScrapeWeeklyAsync(scrapeMostRecentWeekOnly: false, cancellationToken);
+    }
+
+    public Task<WeeklyScrapeResult> ScrapeThisWeekAsync(CancellationToken cancellationToken = default)
+    {
+        return ScrapeWeeklyAsync(scrapeMostRecentWeekOnly: true, cancellationToken);
+    }
+
+    private async Task<WeeklyScrapeResult> ScrapeWeeklyAsync(
+        bool scrapeMostRecentWeekOnly,
+        CancellationToken cancellationToken = default)
     {
         var startedAt = DateTime.UtcNow;
         var scrapeTimer = Stopwatch.StartNew();
-        var messages = new List<string>();
+        var messages = new ConcurrentQueue<string>();
         var applicationsScraped = 0;
         var applicationsSaved = 0;
         var documentsScraped = 0;
         var documentsSaved = 0;
         var authoritiesProcessed = 0;
+        var scraperSettings = scraperOptions.Value;
+        var applicationImportConcurrency = NormalizeConcurrency(scraperSettings.MaxConcurrentApplicationImports);
+        var documentDownloadConcurrency = NormalizeConcurrency(scraperSettings.MaxConcurrentDocumentDownloads);
+        var scrapeCountersLock = new object();
+        using var documentDownloadThrottle = new SemaphoreSlim(documentDownloadConcurrency);
         var fileLog = ScraperFileLogger.Create(
             hostEnvironment.ContentRootPath,
-            scraperOptions.Value.LogDirectory,
+            scraperSettings.LogDirectory,
             startedAt,
             logger);
 
-        logger.LogInformation("Starting weekly planning import scrape at {StartedAtUtc}", startedAt);
-        fileLog.WriteRunSummary($"Starting weekly planning import scrape at {FormatUtc(startedAt)}");
+        var scrapeDescription = scrapeMostRecentWeekOnly
+            ? "current week planning import scrape"
+            : "weekly planning import scrape";
+
+        logger.LogInformation("Starting {ScrapeDescription} at {StartedAtUtc}", scrapeDescription, startedAt);
+        fileLog.WriteRunSummary($"Starting {scrapeDescription} at {FormatUtc(startedAt)}");
         if (fileLog.Enabled)
         {
             logger.LogInformation("Writing scraper text logs to {ScraperLogDirectory}", fileLog.RootDirectory);
@@ -75,9 +99,9 @@ public sealed class PlanningPortalScraper(
 
         if (authorities.Count == 0)
         {
-            logger.LogInformation("Weekly planning import scrape finished without work because no authorities have website URLs");
-            fileLog.WriteRunSummary("Weekly planning import scrape finished without work because no authorities have website URLs.");
-            messages.Add("No planning authorities with website URLs were found.");
+            logger.LogInformation("{ScrapeDescription} finished without work because no authorities have website URLs", scrapeDescription);
+            fileLog.WriteRunSummary($"{scrapeDescription} finished without work because no authorities have website URLs.");
+            messages.Enqueue("No planning authorities with website URLs were found.");
 
             return new WeeklyScrapeResult(
                 authoritiesProcessed,
@@ -87,11 +111,18 @@ public sealed class PlanningPortalScraper(
                 documentsSaved,
                 startedAt,
                 DateTime.UtcNow,
-                messages);
+                messages.ToList());
         }
 
-        var browserFailureRetryCount = Math.Max(0, scraperOptions.Value.BrowserFailureRetryCount);
-        var browserRestartDelay = TimeSpan.FromMilliseconds(Math.Max(0, scraperOptions.Value.BrowserRestartDelayMilliseconds));
+        logger.LogInformation(
+            "Weekly planning import concurrency configured: applications={ApplicationImportConcurrency}, documents={DocumentDownloadConcurrency}",
+            applicationImportConcurrency,
+            documentDownloadConcurrency);
+        fileLog.WriteRunSummary(
+            $"Concurrency: application imports={applicationImportConcurrency}, document downloads={documentDownloadConcurrency}.");
+
+        var browserFailureRetryCount = Math.Max(0, scraperSettings.BrowserFailureRetryCount);
+        var browserRestartDelay = TimeSpan.FromMilliseconds(Math.Max(0, scraperSettings.BrowserRestartDelayMilliseconds));
         await using var browserSession = await StartBrowserSessionWithRetryAsync(
             fileLog,
             browserFailureRetryCount,
@@ -119,6 +150,7 @@ public sealed class PlanningPortalScraper(
                 $"Starting weekly planning scrape pass for dropdown weekNumber {weekNumber}; authorities still with possible weeks={authoritiesRemaining}.");
 
             var authoritiesWithSelectedWeek = 0;
+            var queuedApplicationLinks = new List<QueuedApplicationLink>();
             foreach (var authority in authorities)
             {
                 if (exhaustedAuthorityIds.Contains(authority.Id))
@@ -135,14 +167,14 @@ public sealed class PlanningPortalScraper(
                 try
                 {
                     logger.LogInformation(
-                        "Starting weekly planning scrape for {PlanningAuthorityName} ({PlanningAuthorityId}) at {PlanningAuthorityWebsite} using dropdown weekNumber {WeekNumber}",
+                        "Collecting weekly planning links for {PlanningAuthorityName} ({PlanningAuthorityId}) at {PlanningAuthorityWebsite} using dropdown weekNumber {WeekNumber}",
                         authority.Name,
                         authority.Id,
                         authority.Website,
                         weekNumber);
-                    authorityLog.WriteSummary($"Starting weekly planning scrape for dropdown weekNumber {weekNumber}.");
+                    authorityLog.WriteSummary($"Collecting weekly planning links for dropdown weekNumber {weekNumber}.");
 
-                    var authorityScrapeResult = await ScrapeAuthorityWithBrowserRecoveryAsync(
+                    var authorityLinkResult = await CollectAuthorityApplicationLinksWithBrowserRecoveryAsync(
                         browserSession,
                         authority,
                         authorityLog,
@@ -152,7 +184,7 @@ public sealed class PlanningPortalScraper(
                         browserRestartDelay,
                         cancellationToken);
 
-                    if (authorityScrapeResult.WeekUnavailable)
+                    if (authorityLinkResult.WeekUnavailable)
                     {
                         exhaustedAuthorityIds.Add(authority.Id);
                         logger.LogInformation(
@@ -166,13 +198,10 @@ public sealed class PlanningPortalScraper(
 
                     authoritiesWithSelectedWeek++;
                     authoritiesProcessed++;
-                    var selectedWeekDescription = DescribeWeeklySelection(authorityScrapeResult.SelectedWeek, weekNumber);
-                    var scrapedApplications = authorityScrapeResult.Applications;
-                    applicationsScraped += scrapedApplications.Count;
-                    var authorityDocumentsScraped = scrapedApplications.Sum(application => application.Documents.Count);
-                    documentsScraped += authorityDocumentsScraped;
+                    var selectedWeekDescription = DescribeWeeklySelection(authorityLinkResult.SelectedWeek, weekNumber);
+                    var resultLinks = authorityLinkResult.ResultLinks;
 
-                    if (authorityScrapeResult.Skipped)
+                    if (authorityLinkResult.Skipped)
                     {
                         logger.LogInformation(
                             "Skipped {PlanningAuthorityName} because {SelectedWeek} returned no new applications to scrape",
@@ -183,43 +212,39 @@ public sealed class PlanningPortalScraper(
                         continue;
                     }
 
+                    for (var index = 0; index < resultLinks.Count; index++)
+                    {
+                        queuedApplicationLinks.Add(new QueuedApplicationLink(
+                            authority,
+                            authorityLog,
+                            NormalizeBaseUri(authority.Website!),
+                            resultLinks[index],
+                            authorityLinkResult.SelectedWeek,
+                            weekNumber,
+                            index + 1,
+                            resultLinks.Count));
+                    }
+
                     logger.LogInformation(
-                        "Scraped {ApplicationCount} applications and {DocumentCount} documents for {PlanningAuthorityName} from {SelectedWeek}; importing to database",
-                        scrapedApplications.Count,
-                        authorityDocumentsScraped,
+                        "Queued {ApplicationCount} planning applications for {PlanningAuthorityName} from {SelectedWeek}",
+                        resultLinks.Count,
                         authority.Name,
                         selectedWeekDescription);
                     authorityLog.WriteSummary(
-                        $"Scraped {scrapedApplications.Count} applications and {authorityDocumentsScraped} documents from {selectedWeekDescription}; importing to database.");
-
-                    var saveResult = await SaveApplicationsAsync(authority.Id, scrapedApplications, cancellationToken);
-                    applicationsSaved += saveResult.ApplicationsSaved;
-                    documentsSaved += saveResult.DocumentsSaved;
-                    authorityLog.WriteSummary($"Database import finished: applications saved={saveResult.ApplicationsSaved}, documents saved={saveResult.DocumentsSaved}.");
-
-                    logger.LogInformation(
-                        "Finished {PlanningAuthorityName}: imported {ApplicationsSaved} applications and {DocumentsSaved} new documents in {ElapsedMilliseconds} ms",
-                        authority.Name,
-                        saveResult.ApplicationsSaved,
-                        saveResult.DocumentsSaved,
-                        authorityTimer.ElapsedMilliseconds);
-                    authorityLog.WriteSummary($"Finished authority scrape in {authorityTimer.ElapsedMilliseconds} ms.");
-
-                    messages.Add(
-                        $"{authority.Name}: {selectedWeekDescription} scraped {scrapedApplications.Count} applications and {authorityDocumentsScraped} documents.");
+                        $"Queued {resultLinks.Count} applications from {selectedWeekDescription} for the shuffled scrape queue.");
                 }
-                catch (Exception ex)
+                catch (Exception ex) when (ex is not OperationCanceledException)
                 {
                     logger.LogError(
                         ex,
-                        "Failed to scrape planning authority {PlanningAuthorityName} ({PlanningAuthorityId}) for dropdown weekNumber {WeekNumber} after {ElapsedMilliseconds} ms",
+                        "Failed to collect weekly planning links for {PlanningAuthorityName} ({PlanningAuthorityId}) for dropdown weekNumber {WeekNumber} after {ElapsedMilliseconds} ms",
                         authority.Name,
                         authority.Id,
                         weekNumber,
                         authorityTimer.ElapsedMilliseconds);
-                    authorityLog.WriteSummary($"FAILED after {authorityTimer.ElapsedMilliseconds} ms for dropdown weekNumber {weekNumber}: {ex.GetType().Name}: {ex.Message}");
+                    authorityLog.WriteSummary($"FAILED link collection after {authorityTimer.ElapsedMilliseconds} ms for dropdown weekNumber {weekNumber}: {ex.GetType().Name}: {ex.Message}");
                     authorityLog.WriteExceptionSummary(ex);
-                    messages.Add($"{authority.Name}: scrape failed for weekNumber {weekNumber} - {ex.Message}");
+                    messages.Enqueue($"{authority.Name}: link collection failed for weekNumber {weekNumber} - {ex.Message}");
                 }
             }
 
@@ -232,11 +257,154 @@ public sealed class PlanningPortalScraper(
                     $"Stopping weekly planning import scrape because no planning authority selected dropdown weekNumber {weekNumber}.");
                 break;
             }
+
+            if (queuedApplicationLinks.Count == 0)
+            {
+                logger.LogInformation(
+                    "No new planning applications were queued for dropdown weekNumber {WeekNumber}",
+                    weekNumber);
+                fileLog.WriteRunSummary(
+                    $"No new planning applications were queued for dropdown weekNumber {weekNumber}.");
+
+                if (scrapeMostRecentWeekOnly)
+                {
+                    logger.LogInformation("Stopping current week planning import scrape after dropdown weekNumber {WeekNumber}", weekNumber);
+                    fileLog.WriteRunSummary($"Stopping current week planning import scrape after dropdown weekNumber {weekNumber}.");
+                    break;
+                }
+
+                continue;
+            }
+
+            var shuffledApplicationLinks = ShuffleApplicationQueueByAuthority(queuedApplicationLinks);
+            var authorityStats = queuedApplicationLinks
+                .GroupBy(link => link.Authority.Id)
+                .ToDictionary(
+                    group => group.Key,
+                    group =>
+                    {
+                        var firstLink = group.First();
+                        return new AuthorityWeeklyScrapeStats(
+                            firstLink.Authority,
+                            firstLink.AuthorityLog,
+                            DescribeWeeklySelection(firstLink.SelectedWeek, firstLink.WeekNumber),
+                            group.Count());
+                    });
+
+            logger.LogInformation(
+                "Collected {ApplicationCount} weekly planning application links from {AuthorityCount} authorities for dropdown weekNumber {WeekNumber}; scraping in shuffled order",
+                shuffledApplicationLinks.Count,
+                authorityStats.Count,
+                weekNumber);
+            fileLog.WriteRunSummary(
+                $"Collected {shuffledApplicationLinks.Count} weekly planning application links from {authorityStats.Count} authorities for dropdown weekNumber {weekNumber}; scraping in shuffled order.");
+
+            var queuedWorkItems = shuffledApplicationLinks
+                .Select((link, index) => new QueuedApplicationWorkItem(link, index + 1, shuffledApplicationLinks.Count))
+                .ToList();
+
+            await Parallel.ForEachAsync(
+                queuedWorkItems,
+                new ParallelOptions
+                {
+                    CancellationToken = cancellationToken,
+                    MaxDegreeOfParallelism = applicationImportConcurrency
+                },
+                async (workItem, workerCancellationToken) =>
+            {
+                workerCancellationToken.ThrowIfCancellationRequested();
+
+                var queuedLink = workItem.Link;
+                var stats = authorityStats[queuedLink.Authority.Id];
+
+                try
+                {
+                    var application = await ScrapeQueuedApplicationWithBrowserRecoveryAsync(
+                        browserSession,
+                        queuedLink,
+                        workItem.QueueIndex,
+                        workItem.QueueCount,
+                        messages,
+                        documentDownloadThrottle,
+                        browserFailureRetryCount,
+                        browserRestartDelay,
+                        workerCancellationToken);
+
+                    if (application is null)
+                    {
+                        return;
+                    }
+
+                    var applicationDocumentsScraped = application.Documents.Count;
+                    lock (scrapeCountersLock)
+                    {
+                        applicationsScraped++;
+                        documentsScraped += applicationDocumentsScraped;
+                    }
+
+                    stats.AddScrapeResult(applicationDocumentsScraped);
+
+                    logger.LogInformation(
+                        "Importing scraped planning application {ApplicationReference} for {PlanningAuthorityName}",
+                        application.ApplicationReference ?? application.SourceKey ?? "unknown application",
+                        queuedLink.Authority.Name);
+                    queuedLink.AuthorityLog.WriteSummary(
+                        $"Importing global application {workItem.QueueIndex}/{workItem.QueueCount}: {DescribeScrapedApplication(application)}.");
+
+                    var saveResult = await SaveApplicationsAsync(queuedLink.Authority.Id, [application], workerCancellationToken);
+                    lock (scrapeCountersLock)
+                    {
+                        applicationsSaved += saveResult.ApplicationsSaved;
+                        documentsSaved += saveResult.DocumentsSaved;
+                    }
+
+                    stats.AddSaveResult(saveResult);
+
+                    queuedLink.AuthorityLog.WriteSummary(
+                        $"Database import finished for global application {workItem.QueueIndex}/{workItem.QueueCount}: applications saved={saveResult.ApplicationsSaved}, documents saved={saveResult.DocumentsSaved}.");
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    logger.LogError(
+                        ex,
+                        "Failed to scrape or import queued planning application {ApplicationUrl} for {PlanningAuthorityName}",
+                        queuedLink.ResultLink.Url,
+                        queuedLink.Authority.Name);
+                    queuedLink.AuthorityLog.WriteSummary(
+                        $"FAILED queued application {queuedLink.AuthorityLinkIndex}/{queuedLink.AuthorityLinkCount} (global {workItem.QueueIndex}/{workItem.QueueCount}): {DescribeSearchResult(queuedLink.ResultLink)}. Error={ex.GetType().Name}: {ex.Message}");
+                    queuedLink.AuthorityLog.WriteExceptionSummary(ex);
+                    messages.Enqueue($"{queuedLink.Authority.Name}: failed to scrape/import {queuedLink.ResultLink.Url} - {ex.Message}");
+                }
+            });
+
+            foreach (var stats in authorityStats.Values.OrderBy(stats => stats.Authority.Name))
+            {
+                logger.LogInformation(
+                    "Finished shuffled weekly scrape for {PlanningAuthorityName} from {SelectedWeek}: scraped {ApplicationsScraped}/{QueuedApplications} applications, imported {ApplicationsSaved} applications and {DocumentsSaved} documents",
+                    stats.Authority.Name,
+                    stats.SelectedWeekDescription,
+                    stats.ApplicationsScraped,
+                    stats.QueuedApplications,
+                    stats.ApplicationsSaved,
+                    stats.DocumentsSaved);
+                stats.AuthorityLog.WriteSummary(
+                    $"Finished shuffled scrape for {stats.SelectedWeekDescription}: scraped {stats.ApplicationsScraped}/{stats.QueuedApplications} applications, documents scraped={stats.DocumentsScraped}, applications saved={stats.ApplicationsSaved}, documents saved={stats.DocumentsSaved}.");
+                messages.Enqueue(
+                    $"{stats.Authority.Name}: {stats.SelectedWeekDescription} scraped {stats.ApplicationsScraped}/{stats.QueuedApplications} queued applications and {stats.DocumentsScraped} documents.");
+            }
+
+            if (scrapeMostRecentWeekOnly)
+            {
+                logger.LogInformation("Stopping current week planning import scrape after dropdown weekNumber {WeekNumber}", weekNumber);
+                fileLog.WriteRunSummary($"Stopping current week planning import scrape after dropdown weekNumber {weekNumber}.");
+                break;
+            }
         }
 
         scrapeTimer.Stop();
         logger.LogInformation(
-            "Finished weekly planning import scrape in {ElapsedMilliseconds} ms. Authorities={AuthoritiesProcessed}, ApplicationsScraped={ApplicationsScraped}, ApplicationsSaved={ApplicationsSaved}, DocumentsScraped={DocumentsScraped}, DocumentsSaved={DocumentsSaved}",
+            "Finished {ScrapeDescription} in {ElapsedMilliseconds} ms. Authorities={AuthoritiesProcessed}, ApplicationsScraped={ApplicationsScraped}, ApplicationsSaved={ApplicationsSaved}, DocumentsScraped={DocumentsScraped}, DocumentsSaved={DocumentsSaved}",
+            scrapeDescription,
             scrapeTimer.ElapsedMilliseconds,
             authoritiesProcessed,
             applicationsScraped,
@@ -244,7 +412,7 @@ public sealed class PlanningPortalScraper(
             documentsScraped,
             documentsSaved);
         fileLog.WriteRunSummary(
-            $"Finished weekly planning import scrape in {scrapeTimer.ElapsedMilliseconds} ms. Authorities={authoritiesProcessed}, ApplicationsScraped={applicationsScraped}, ApplicationsSaved={applicationsSaved}, DocumentsScraped={documentsScraped}, DocumentsSaved={documentsSaved}");
+            $"Finished {scrapeDescription} in {scrapeTimer.ElapsedMilliseconds} ms. Authorities={authoritiesProcessed}, ApplicationsScraped={applicationsScraped}, ApplicationsSaved={applicationsSaved}, DocumentsScraped={documentsScraped}, DocumentsSaved={documentsSaved}");
 
         return new WeeklyScrapeResult(
             authoritiesProcessed,
@@ -254,7 +422,7 @@ public sealed class PlanningPortalScraper(
             documentsSaved,
             startedAt,
             DateTime.UtcNow,
-            messages);
+            messages.ToList());
     }
 
     private async Task<BrowserSession> StartBrowserSessionWithRetryAsync(
@@ -297,11 +465,11 @@ public sealed class PlanningPortalScraper(
         }
     }
 
-    private async Task<AuthorityScrapeResult> ScrapeAuthorityWithBrowserRecoveryAsync(
+    private async Task<AuthorityApplicationLinkResult> CollectAuthorityApplicationLinksWithBrowserRecoveryAsync(
         BrowserSession browserSession,
         PlanningAuthority authority,
         AuthorityFileLog authorityLog,
-        List<string> messages,
+        ConcurrentQueue<string> messages,
         int weekNumber,
         int retryCount,
         TimeSpan restartDelay,
@@ -309,39 +477,39 @@ public sealed class PlanningPortalScraper(
     {
         for (var attempt = 0; ; attempt++)
         {
+            var browserSnapshot = await browserSession.GetSnapshotAsync(cancellationToken);
             try
             {
-                return await ScrapeAuthorityAsync(browserSession.Browser, authority, authorityLog, messages, weekNumber, cancellationToken);
+                return await CollectAuthorityApplicationLinksAsync(browserSnapshot.Browser, authority, authorityLog, messages, weekNumber, cancellationToken);
             }
             catch (Exception ex) when (IsRestartableBrowserFailure(ex) && attempt < retryCount)
             {
                 logger.LogWarning(
                     ex,
-                    "Playwright/Chromium failed while scraping {PlanningAuthorityName}. Restarting browser and retrying authority after {RestartDelaySeconds} seconds ({RetryAttempt}/{RetryCount})",
+                    "Playwright/Chromium failed while collecting links for {PlanningAuthorityName}. Restarting browser and retrying authority after {RestartDelaySeconds} seconds ({RetryAttempt}/{RetryCount})",
                     authority.Name,
                     restartDelay.TotalSeconds,
                     attempt + 1,
                     retryCount);
                 authorityLog.WriteSummary(
-                    $"Playwright/Chromium failed ({ex.GetType().Name}: {ex.Message}). Stopping browser, waiting {restartDelay.TotalSeconds:N0} seconds, then retrying authority ({attempt + 1}/{retryCount}).");
-                messages.Add(
-                    $"{authority.Name}: browser failed; restarting Playwright/Chromium and retrying after {restartDelay.TotalSeconds:N0} seconds.");
+                    $"Playwright/Chromium failed while collecting links ({ex.GetType().Name}: {ex.Message}). Stopping browser, waiting {restartDelay.TotalSeconds:N0} seconds, then retrying authority ({attempt + 1}/{retryCount}).");
+                messages.Enqueue(
+                    $"{authority.Name}: browser failed while collecting links; restarting Playwright/Chromium and retrying after {restartDelay.TotalSeconds:N0} seconds.");
 
                 await browserSession.RestartAsync(restartDelay, cancellationToken);
             }
         }
     }
 
-    private async Task<AuthorityScrapeResult> ScrapeAuthorityAsync(
+    private async Task<AuthorityApplicationLinkResult> CollectAuthorityApplicationLinksAsync(
         IBrowser browser,
         PlanningAuthority authority,
         AuthorityFileLog authorityLog,
-        List<string> messages,
+        ConcurrentQueue<string> messages,
         int weekNumber,
         CancellationToken cancellationToken)
     {
         var baseUri = NormalizeBaseUri(authority.Website!);
-        var applications = new List<ScrapedApplication>();
         authorityLog.WriteSummary($"Base URI: {baseUri}");
 
         logger.LogDebug("Opening browser context for {PlanningAuthorityName} using base URI {BaseUri}", authority.Name, baseUri);
@@ -410,9 +578,9 @@ public sealed class PlanningPortalScraper(
                 weekNumber);
             authorityLog.WriteSummary(
                 $"Weekly dropdown has {selectedWeekResult.OptionCount} options and no option for weekNumber {weekNumber}; skipping authority for this pass.");
-            messages.Add($"{authority.Name}: weekly dropdown has no option for weekNumber {weekNumber}.");
+            messages.Enqueue($"{authority.Name}: weekly dropdown has no option for weekNumber {weekNumber}.");
 
-            return new AuthorityScrapeResult(applications, Skipped: true, WeekUnavailable: true, SelectedWeek: null);
+            return new AuthorityApplicationLinkResult([], Skipped: true, WeekUnavailable: true, SelectedWeek: null);
         }
 
         authorityLog.WriteSummary($"Selected weekly list: {DescribeWeeklySelection(selectedWeek, weekNumber)}.");
@@ -455,68 +623,153 @@ public sealed class PlanningPortalScraper(
                 authority.Name,
                 DescribeWeeklySelection(selectedWeek, weekNumber));
             authorityLog.WriteSummary($"{DescribeWeeklySelection(selectedWeek, weekNumber)} returned no new applications.");
-            messages.Add($"{authority.Name}: {DescribeWeeklySelection(selectedWeek, weekNumber)} returned no new applications");
+            messages.Enqueue($"{authority.Name}: {DescribeWeeklySelection(selectedWeek, weekNumber)} returned no new applications");
 
-            return new AuthorityScrapeResult(applications, Skipped: true, WeekUnavailable: false, SelectedWeek: selectedWeek);
+            return new AuthorityApplicationLinkResult(resultLinks, Skipped: true, WeekUnavailable: false, SelectedWeek: selectedWeek);
         }
 
-        for (var index = 0; index < resultLinks.Count; index++)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            var resultLink = resultLinks[index];
-            var applicationTimer = Stopwatch.StartNew();
-            var applicationLog = authorityLog.CreateApplicationLog(resultLink, index + 1, resultLinks.Count);
-            authorityLog.WriteSummary(
-                $"Application {index + 1}/{resultLinks.Count} started: {DescribeSearchResult(resultLink)}. Detail log: {applicationLog.FileName}");
+        return new AuthorityApplicationLinkResult(resultLinks, Skipped: false, WeekUnavailable: false, SelectedWeek: selectedWeek);
+    }
 
+    private async Task<ScrapedApplication?> ScrapeQueuedApplicationWithBrowserRecoveryAsync(
+        BrowserSession browserSession,
+        QueuedApplicationLink queuedLink,
+        int queueIndex,
+        int queueCount,
+        ConcurrentQueue<string> messages,
+        SemaphoreSlim documentDownloadThrottle,
+        int retryCount,
+        TimeSpan restartDelay,
+        CancellationToken cancellationToken)
+    {
+        for (var attempt = 0; ; attempt++)
+        {
+            var browserSnapshot = await browserSession.GetSnapshotAsync(cancellationToken);
             try
             {
-                logger.LogInformation(
-                    "Scraping planning application {ApplicationIndex}/{ApplicationCount} for {PlanningAuthorityName}: {ApplicationUrl}",
-                    index + 1,
-                    resultLinks.Count,
-                    authority.Name,
-                    resultLink.Url);
-
-                var application = await ScrapeApplicationAsync(page, baseUri, resultLink, applicationLog, cancellationToken);
-                applications.Add(application);
-                applicationTimer.Stop();
-                applicationLog.WriteSection("Finished");
-                applicationLog.WriteLine($"Status: succeeded in {applicationTimer.ElapsedMilliseconds} ms.");
-                authorityLog.WriteSummary(
-                    $"Application {index + 1}/{resultLinks.Count} succeeded in {applicationTimer.ElapsedMilliseconds} ms: {DescribeScrapedApplication(application)}. Documents={application.Documents.Count}. Detail log: {applicationLog.FileName}");
+                return await ScrapeQueuedApplicationAsync(
+                    browserSnapshot.Browser,
+                    queuedLink,
+                    queueIndex,
+                    queueCount,
+                    messages,
+                    documentDownloadThrottle,
+                    cancellationToken);
             }
-            catch (Exception ex)
-                when (IsRestartableBrowserFailure(ex))
+            catch (Exception ex) when (IsRestartableBrowserFailure(ex) && attempt < retryCount)
             {
-                applicationTimer.Stop();
-                applicationLog.WriteSection("Browser Failure");
-                applicationLog.WriteLine($"Status: browser failed in {applicationTimer.ElapsedMilliseconds} ms.");
-                applicationLog.WriteException(ex);
-                authorityLog.WriteSummary(
-                    $"Application {index + 1}/{resultLinks.Count} stopped because Playwright/Chromium failed in {applicationTimer.ElapsedMilliseconds} ms: {DescribeSearchResult(resultLink)}. Error={ex.GetType().Name}: {ex.Message}. Detail log: {applicationLog.FileName}");
-
-                throw;
-            }
-            catch (Exception ex)
-            {
-                applicationTimer.Stop();
-                applicationLog.WriteSection("Failed");
-                applicationLog.WriteLine($"Status: failed in {applicationTimer.ElapsedMilliseconds} ms.");
-                applicationLog.WriteLine($"Page at failure: {page.Url}");
-                applicationLog.WriteException(ex);
-                authorityLog.WriteSummary(
-                    $"Application {index + 1}/{resultLinks.Count} FAILED in {applicationTimer.ElapsedMilliseconds} ms: {DescribeSearchResult(resultLink)}. Page at failure: {page.Url}. Error={ex.GetType().Name}: {ex.Message}. Detail log: {applicationLog.FileName}");
                 logger.LogWarning(
                     ex,
-                    "{PlanningAuthorityName}: failed to scrape planning application {ApplicationUrl}",
-                    authority.Name,
-                    resultLink.Url);
-                messages.Add($"{authority.Name}: failed to scrape {resultLink.Url} - {ex.Message}");
+                    "Playwright/Chromium failed while scraping queued planning application {ApplicationUrl} for {PlanningAuthorityName}. Restarting browser after {RestartDelaySeconds} seconds ({RetryAttempt}/{RetryCount})",
+                    queuedLink.ResultLink.Url,
+                    queuedLink.Authority.Name,
+                    restartDelay.TotalSeconds,
+                    attempt + 1,
+                    retryCount);
+                queuedLink.AuthorityLog.WriteSummary(
+                    $"Playwright/Chromium failed while scraping queued application {queuedLink.AuthorityLinkIndex}/{queuedLink.AuthorityLinkCount} (global {queueIndex}/{queueCount}): {ex.GetType().Name}: {ex.Message}. Restarting browser after {restartDelay.TotalSeconds:N0} seconds ({attempt + 1}/{retryCount}).");
+                messages.Enqueue(
+                    $"{queuedLink.Authority.Name}: browser failed while scraping {queuedLink.ResultLink.Url}; restarting Playwright/Chromium and retrying after {restartDelay.TotalSeconds:N0} seconds.");
+
+                await browserSession.RestartAsync(restartDelay, cancellationToken, browserSnapshot.Generation);
+            }
+            catch (Exception ex) when (IsRestartableBrowserFailure(ex))
+            {
+                logger.LogError(
+                    ex,
+                    "Playwright/Chromium failed while scraping queued planning application {ApplicationUrl} for {PlanningAuthorityName}; retry limit reached",
+                    queuedLink.ResultLink.Url,
+                    queuedLink.Authority.Name);
+                queuedLink.AuthorityLog.WriteSummary(
+                    $"FAILED queued application {queuedLink.AuthorityLinkIndex}/{queuedLink.AuthorityLinkCount} (global {queueIndex}/{queueCount}) after browser retry limit: {DescribeSearchResult(queuedLink.ResultLink)}. Error={ex.GetType().Name}: {ex.Message}");
+                queuedLink.AuthorityLog.WriteExceptionSummary(ex);
+                messages.Enqueue($"{queuedLink.Authority.Name}: browser failed while scraping {queuedLink.ResultLink.Url} after retries - {ex.Message}");
+
+                await browserSession.RestartAsync(restartDelay, cancellationToken, browserSnapshot.Generation);
+                return null;
             }
         }
+    }
 
-        return new AuthorityScrapeResult(applications, Skipped: false, WeekUnavailable: false, SelectedWeek: selectedWeek);
+    private async Task<ScrapedApplication?> ScrapeQueuedApplicationAsync(
+        IBrowser browser,
+        QueuedApplicationLink queuedLink,
+        int queueIndex,
+        int queueCount,
+        ConcurrentQueue<string> messages,
+        SemaphoreSlim documentDownloadThrottle,
+        CancellationToken cancellationToken)
+    {
+        await using var context = await browser.NewContextAsync(new BrowserNewContextOptions
+        {
+            IgnoreHTTPSErrors = true
+        });
+
+        var page = await context.NewPageAsync();
+        page.SetDefaultTimeout(scraperOptions.Value.DefaultTimeoutMilliseconds);
+        page.SetDefaultNavigationTimeout(scraperOptions.Value.DefaultNavigationTimeoutMilliseconds);
+
+        var applicationTimer = Stopwatch.StartNew();
+        var applicationLog = queuedLink.AuthorityLog.CreateApplicationLog(
+            queuedLink.ResultLink,
+            queuedLink.AuthorityLinkIndex,
+            queuedLink.AuthorityLinkCount);
+        queuedLink.AuthorityLog.WriteSummary(
+            $"Application {queuedLink.AuthorityLinkIndex}/{queuedLink.AuthorityLinkCount} (global {queueIndex}/{queueCount}) started from shuffled queue: {DescribeSearchResult(queuedLink.ResultLink)}. Detail log: {applicationLog.FileName}");
+
+        try
+        {
+            logger.LogInformation(
+                "Scraping queued planning application {ApplicationIndex}/{ApplicationCount} for {PlanningAuthorityName}: {ApplicationUrl}",
+                queueIndex,
+                queueCount,
+                queuedLink.Authority.Name,
+                queuedLink.ResultLink.Url);
+
+            var application = await ScrapeApplicationAsync(
+                page,
+                queuedLink.BaseUri,
+                queuedLink.ResultLink,
+                applicationLog,
+                documentDownloadThrottle,
+                cancellationToken);
+            applicationTimer.Stop();
+            applicationLog.WriteSection("Finished");
+            applicationLog.WriteLine($"Status: succeeded in {applicationTimer.ElapsedMilliseconds} ms.");
+            queuedLink.AuthorityLog.WriteSummary(
+                $"Application {queuedLink.AuthorityLinkIndex}/{queuedLink.AuthorityLinkCount} (global {queueIndex}/{queueCount}) succeeded in {applicationTimer.ElapsedMilliseconds} ms: {DescribeScrapedApplication(application)}. Documents={application.Documents.Count}. Detail log: {applicationLog.FileName}");
+
+            return application;
+        }
+        catch (Exception ex) when (IsRestartableBrowserFailure(ex))
+        {
+            applicationTimer.Stop();
+            applicationLog.WriteSection("Browser Failure");
+            applicationLog.WriteLine($"Status: browser failed in {applicationTimer.ElapsedMilliseconds} ms.");
+            applicationLog.WriteException(ex);
+            queuedLink.AuthorityLog.WriteSummary(
+                $"Application {queuedLink.AuthorityLinkIndex}/{queuedLink.AuthorityLinkCount} (global {queueIndex}/{queueCount}) stopped because Playwright/Chromium failed in {applicationTimer.ElapsedMilliseconds} ms: {DescribeSearchResult(queuedLink.ResultLink)}. Error={ex.GetType().Name}: {ex.Message}. Detail log: {applicationLog.FileName}");
+
+            throw;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            applicationTimer.Stop();
+            applicationLog.WriteSection("Failed");
+            applicationLog.WriteLine($"Status: failed in {applicationTimer.ElapsedMilliseconds} ms.");
+            applicationLog.WriteLine($"Page at failure: {page.Url}");
+            applicationLog.WriteException(ex);
+            queuedLink.AuthorityLog.WriteSummary(
+                $"Application {queuedLink.AuthorityLinkIndex}/{queuedLink.AuthorityLinkCount} (global {queueIndex}/{queueCount}) FAILED in {applicationTimer.ElapsedMilliseconds} ms: {DescribeSearchResult(queuedLink.ResultLink)}. Page at failure: {page.Url}. Error={ex.GetType().Name}: {ex.Message}. Detail log: {applicationLog.FileName}");
+            logger.LogWarning(
+                ex,
+                "{PlanningAuthorityName}: failed to scrape queued planning application {ApplicationUrl}",
+                queuedLink.Authority.Name,
+                queuedLink.ResultLink.Url);
+            messages.Enqueue($"{queuedLink.Authority.Name}: failed to scrape {queuedLink.ResultLink.Url} - {ex.Message}");
+
+            return null;
+        }
     }
 
     private async Task<PreviouslyScrapedFilterResult> FilterPreviouslyScrapedApplicationsAsync(
@@ -624,6 +877,54 @@ public sealed class PlanningPortalScraper(
             string.Join("; ", skippedApplications));
 
         return new PreviouslyScrapedFilterResult(removedCount, skippedApplications);
+    }
+
+    private static List<QueuedApplicationLink> ShuffleApplicationQueueByAuthority(
+        IReadOnlyList<QueuedApplicationLink> applicationLinks)
+    {
+        var authorityQueues = applicationLinks
+            .GroupBy(link => link.Authority.Id)
+            .Select(group =>
+            {
+                var links = group.ToList();
+                ShuffleInPlace(links);
+                return new Queue<QueuedApplicationLink>(links);
+            })
+            .ToList();
+        var shuffled = new List<QueuedApplicationLink>(applicationLinks.Count);
+        Guid? previousAuthorityId = null;
+
+        while (authorityQueues.Count > 0)
+        {
+            var candidates = authorityQueues
+                .Where(queue => queue.Peek().Authority.Id != previousAuthorityId)
+                .ToList();
+            if (candidates.Count == 0)
+            {
+                candidates = authorityQueues;
+            }
+
+            var selectedQueue = candidates[Random.Shared.Next(candidates.Count)];
+            var nextLink = selectedQueue.Dequeue();
+            shuffled.Add(nextLink);
+            previousAuthorityId = nextLink.Authority.Id;
+
+            if (selectedQueue.Count == 0)
+            {
+                authorityQueues.Remove(selectedQueue);
+            }
+        }
+
+        return shuffled;
+    }
+
+    private static void ShuffleInPlace<T>(IList<T> items)
+    {
+        for (var index = items.Count - 1; index > 0; index--)
+        {
+            var swapIndex = Random.Shared.Next(index + 1);
+            (items[index], items[swapIndex]) = (items[swapIndex], items[index]);
+        }
     }
 
 
@@ -1112,6 +1413,7 @@ public sealed class PlanningPortalScraper(
         Uri baseUri,
         SearchResultDto resultLink,
         ApplicationFileLog applicationLog,
+        SemaphoreSlim documentDownloadThrottle,
         CancellationToken cancellationToken)
     {
         var applicationUrl = new Uri(baseUri, WebUtility.HtmlDecode(resultLink.Url)).ToString();
@@ -1222,46 +1524,16 @@ public sealed class PlanningPortalScraper(
             documents.Count,
             application.ApplicationReference ?? application.SourceKey ?? applicationUrl);
 
-        for (var index = 0; index < documents.Count; index++)
+        var extractedDocuments = await ExtractDocumentsConcurrentlyAsync(
+            documents,
+            page.Context,
+            application,
+            applicationUrl,
+            applicationLog,
+            documentDownloadThrottle,
+            cancellationToken);
+        foreach (var document in extractedDocuments)
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            var document = documents[index];
-            applicationLog.WriteDocumentStart(document, index + 1, documents.Count);
-
-            logger.LogInformation(
-                "Extracting document {DocumentIndex}/{DocumentCount} for planning application {ApplicationReference}: {DocumentName} ({DocumentType})",
-                index + 1,
-                documents.Count,
-                application.ApplicationReference ?? application.SourceKey ?? applicationUrl,
-                document.Name,
-                document.DocumentType);
-
-            PlanningDocumentTextExtractionResult extraction;
-            try
-            {
-                extraction = await documentContentService.ExtractAsync(document.Url, page.Context, cancellationToken);
-            }
-            catch (Exception ex)
-            {
-                applicationLog.WriteLine($"Document extraction failed for {document.Url}.");
-                applicationLog.WriteException(ex);
-                throw;
-            }
-
-            document.ContentText = extraction.ContentText;
-            document.FileName = extraction.FileName;
-            document.ContentType = extraction.ContentType;
-            document.ParseStatus = extraction.ParseStatus;
-            document.ParseError = extraction.ParseError;
-            document.ParsedAt = DateTime.UtcNow;
-            applicationLog.WriteDocumentExtractionResult(document);
-
-            logger.LogInformation(
-                "Document extraction finished with status {ParseStatus} for {DocumentFileName}; extracted {CharacterCount} characters",
-                document.ParseStatus,
-                document.FileName ?? document.Name,
-                document.ContentText?.Length ?? 0);
-
             application.Documents.Add(document);
         }
 
@@ -1270,6 +1542,94 @@ public sealed class PlanningPortalScraper(
         applicationLog.WriteKeyValue("Documents added", application.Documents.Count);
 
         return application;
+    }
+
+    private async Task<IReadOnlyList<ScrapedDocument>> ExtractDocumentsConcurrentlyAsync(
+        IReadOnlyList<ScrapedDocument> documents,
+        IBrowserContext browserContext,
+        ScrapedApplication application,
+        string applicationUrl,
+        ApplicationFileLog applicationLog,
+        SemaphoreSlim documentDownloadThrottle,
+        CancellationToken cancellationToken)
+    {
+        var extractionTasks = documents
+            .Select((document, index) => ExtractDocumentAsync(
+                document,
+                index + 1,
+                documents.Count,
+                browserContext,
+                application,
+                applicationUrl,
+                applicationLog,
+                documentDownloadThrottle,
+                cancellationToken))
+            .ToArray();
+        var extractionResults = await Task.WhenAll(extractionTasks);
+
+        return extractionResults
+            .OrderBy(result => result.Index)
+            .Select(result => result.Document)
+            .ToList();
+    }
+
+    private async Task<ScrapedDocumentExtractionResult> ExtractDocumentAsync(
+        ScrapedDocument document,
+        int index,
+        int total,
+        IBrowserContext browserContext,
+        ScrapedApplication application,
+        string applicationUrl,
+        ApplicationFileLog applicationLog,
+        SemaphoreSlim documentDownloadThrottle,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        applicationLog.WriteDocumentStart(document, index, total);
+
+        logger.LogInformation(
+            "Extracting document {DocumentIndex}/{DocumentCount} for planning application {ApplicationReference}: {DocumentName} ({DocumentType})",
+            index,
+            total,
+            application.ApplicationReference ?? application.SourceKey ?? applicationUrl,
+            document.Name,
+            document.DocumentType);
+
+        PlanningDocumentTextExtractionResult extraction;
+        try
+        {
+            await documentDownloadThrottle.WaitAsync(cancellationToken);
+            try
+            {
+                extraction = await documentContentService.ExtractAsync(document.Url, browserContext, cancellationToken);
+            }
+            finally
+            {
+                documentDownloadThrottle.Release();
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            applicationLog.WriteLine($"Document extraction failed for {document.Url}.");
+            applicationLog.WriteException(ex);
+            throw;
+        }
+
+        document.ContentText = extraction.ContentText;
+        document.FileName = extraction.FileName;
+        document.ContentType = extraction.ContentType;
+        document.ParseStatus = extraction.ParseStatus;
+        document.ParseError = extraction.ParseError;
+        document.ParsedAt = DateTime.UtcNow;
+        applicationLog.WriteDocumentExtractionResult(document);
+
+        logger.LogInformation(
+            "Document extraction finished with status {ParseStatus} for {DocumentFileName}; extracted {CharacterCount} characters",
+            document.ParseStatus,
+            document.FileName ?? document.Name,
+            document.ContentText?.Length ?? 0);
+
+        return new ScrapedDocumentExtractionResult(index, document);
     }
 
     private static async Task<Dictionary<string, string>> ExtractDetailsAsync(IPage page)
@@ -1776,6 +2136,11 @@ public sealed class PlanningPortalScraper(
         return string.IsNullOrWhiteSpace(value) ? null : WhitespaceRegex.Replace(value, " ").Trim();
     }
 
+    private static int NormalizeConcurrency(int configuredValue)
+    {
+        return Math.Max(1, configuredValue);
+    }
+
     private static string? Truncate(string? value, int maxLength)
     {
         value = NormalizeText(value);
@@ -1784,11 +2149,26 @@ public sealed class PlanningPortalScraper(
 
     private sealed class BrowserSession(ILogger logger) : IAsyncDisposable
     {
+        private readonly SemaphoreSlim _restartLock = new(1, 1);
         private IPlaywright? _playwright;
         private IBrowser? _browser;
+        private int _generation;
 
-        public IBrowser Browser => _browser
-            ?? throw new InvalidOperationException("The Playwright browser session has not been started.");
+        public async Task<BrowserSnapshot> GetSnapshotAsync(CancellationToken cancellationToken)
+        {
+            await _restartLock.WaitAsync(cancellationToken);
+            try
+            {
+                var browser = _browser
+                    ?? throw new InvalidOperationException("The Playwright browser session has not been started.");
+
+                return new BrowserSnapshot(browser, _generation);
+            }
+            finally
+            {
+                _restartLock.Release();
+            }
+        }
 
         public async Task StartAsync()
         {
@@ -1805,6 +2185,7 @@ public sealed class PlanningPortalScraper(
                 {
                     Headless = true
                 });
+                _generation++;
                 logger.LogDebug("Launched headless Chromium for weekly planning import scrape");
             }
             catch
@@ -1815,21 +2196,48 @@ public sealed class PlanningPortalScraper(
             }
         }
 
-        public async Task RestartAsync(TimeSpan restartDelay, CancellationToken cancellationToken)
+        public async Task<bool> RestartAsync(
+            TimeSpan restartDelay,
+            CancellationToken cancellationToken,
+            int? expectedGeneration = null)
         {
-            await StopAsync();
-
-            if (restartDelay > TimeSpan.Zero)
+            await _restartLock.WaitAsync(cancellationToken);
+            try
             {
-                await Task.Delay(restartDelay, cancellationToken);
-            }
+                if (expectedGeneration is { } generation && generation != _generation)
+                {
+                    logger.LogDebug(
+                        "Skipping Playwright/Chromium restart because another worker already restarted the browser session");
+                    return false;
+                }
 
-            await StartAsync();
+                await StopAsync();
+
+                if (restartDelay > TimeSpan.Zero)
+                {
+                    await Task.Delay(restartDelay, cancellationToken);
+                }
+
+                await StartAsync();
+                return true;
+            }
+            finally
+            {
+                _restartLock.Release();
+            }
         }
 
         public async ValueTask DisposeAsync()
         {
-            await StopAsync();
+            await _restartLock.WaitAsync();
+            try
+            {
+                await StopAsync();
+            }
+            finally
+            {
+                _restartLock.Release();
+            }
         }
 
         private async Task StopAsync()
@@ -1867,6 +2275,7 @@ public sealed class PlanningPortalScraper(
     {
         private const string DefaultLogDirectory = "Services/ScraperLogs";
         private readonly ILogger _logger;
+        private readonly object _writeLock = new();
         private readonly string? _runSummaryPath;
 
         private ScraperFileLogger(string? rootDirectory, DateTime runStartedAtUtc, ILogger logger)
@@ -1978,12 +2387,6 @@ public sealed class PlanningPortalScraper(
 
             try
             {
-                var directory = Path.GetDirectoryName(path);
-                if (!string.IsNullOrWhiteSpace(directory))
-                {
-                    Directory.CreateDirectory(directory);
-                }
-
                 var timestamp = FormatUtc(DateTime.UtcNow);
                 var builder = new StringBuilder();
                 foreach (var line in SplitLines(message))
@@ -1995,7 +2398,16 @@ public sealed class PlanningPortalScraper(
                         .AppendLine(line);
                 }
 
-                File.AppendAllText(path, builder.ToString(), Encoding.UTF8);
+                lock (_writeLock)
+                {
+                    var directory = Path.GetDirectoryName(path);
+                    if (!string.IsNullOrWhiteSpace(directory))
+                    {
+                        Directory.CreateDirectory(directory);
+                    }
+
+                    File.AppendAllText(path, builder.ToString(), Encoding.UTF8);
+                }
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
@@ -2257,13 +2669,75 @@ public sealed class PlanningPortalScraper(
         }
     }
 
+    private sealed record BrowserSnapshot(IBrowser Browser, int Generation);
+
     private sealed record SaveResult(int ApplicationsSaved, int DocumentsSaved);
 
-    private sealed record AuthorityScrapeResult(
-        IReadOnlyList<ScrapedApplication> Applications,
+    private sealed record QueuedApplicationWorkItem(
+        QueuedApplicationLink Link,
+        int QueueIndex,
+        int QueueCount);
+
+    private sealed record ScrapedDocumentExtractionResult(int Index, ScrapedDocument Document);
+
+    private sealed record AuthorityApplicationLinkResult(
+        IReadOnlyList<SearchResultDto> ResultLinks,
         bool Skipped,
         bool WeekUnavailable,
         WeeklyListSelection? SelectedWeek);
+
+    private sealed record QueuedApplicationLink(
+        PlanningAuthority Authority,
+        AuthorityFileLog AuthorityLog,
+        Uri BaseUri,
+        SearchResultDto ResultLink,
+        WeeklyListSelection? SelectedWeek,
+        int WeekNumber,
+        int AuthorityLinkIndex,
+        int AuthorityLinkCount);
+
+    private sealed class AuthorityWeeklyScrapeStats(
+        PlanningAuthority authority,
+        AuthorityFileLog authorityLog,
+        string selectedWeekDescription,
+        int queuedApplications)
+    {
+        private readonly object _sync = new();
+
+        public PlanningAuthority Authority { get; } = authority;
+
+        public AuthorityFileLog AuthorityLog { get; } = authorityLog;
+
+        public string SelectedWeekDescription { get; } = selectedWeekDescription;
+
+        public int QueuedApplications { get; } = queuedApplications;
+
+        public int ApplicationsScraped { get; private set; }
+
+        public int ApplicationsSaved { get; private set; }
+
+        public int DocumentsScraped { get; private set; }
+
+        public int DocumentsSaved { get; private set; }
+
+        public void AddScrapeResult(int documentCount)
+        {
+            lock (_sync)
+            {
+                ApplicationsScraped++;
+                DocumentsScraped += documentCount;
+            }
+        }
+
+        public void AddSaveResult(SaveResult saveResult)
+        {
+            lock (_sync)
+            {
+                ApplicationsSaved += saveResult.ApplicationsSaved;
+                DocumentsSaved += saveResult.DocumentsSaved;
+            }
+        }
+    }
 
     private sealed record PreviouslyScrapedFilterResult(int SkippedLinkCount, IReadOnlyList<string> SkippedApplications)
     {

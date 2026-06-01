@@ -12,5 +12,9 @@ public sealed class PlanningPortalScraperOptions
 
     public int BrowserRestartDelayMilliseconds { get; set; } = 30_000;
 
+    public int MaxConcurrentApplicationImports { get; set; } = 3;
+
+    public int MaxConcurrentDocumentDownloads { get; set; } = 4;
+
     public string LogDirectory { get; set; } = "Services/ScraperLogs";
 }

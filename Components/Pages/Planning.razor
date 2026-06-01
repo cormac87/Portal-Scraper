@@ -12,8 +12,11 @@
 
 <PlanningPageHeader CanExportSearchResults="@CanExportSearchResults"
                     IsScraping="@_isScraping"
+                    IsScrapingWeekly="@_isScrapingWeekly"
+                    IsScrapingThisWeek="@_isScrapingThisWeek"
                     OnExport="OpenExportColumnsModal"
-                    OnScrape="ScrapeWeeklyAsync" />
+                    OnScrape="ScrapeWeeklyAsync"
+                    OnScrapeThisWeek="ScrapeThisWeekAsync" />
 
 <PlanningSummaryCards Authorities="@_authorities"
                       ApplicationTotalCount="@_applicationTotalCount"
@@ -126,6 +129,8 @@ else
     private int _searchTotalCount;
     private bool _isLoading = true;
     private bool _isScraping;
+    private bool _isScrapingWeekly;
+    private bool _isScrapingThisWeek;
     private bool _isSearching;
     private bool _isFindingLocationAuthorities;
     private bool _searchHasRun;
@@ -160,22 +165,50 @@ else
 
     private async Task ScrapeWeeklyAsync()
     {
+        await RunScrapeAsync(
+            () => Scraper.ScrapeWeeklyAsync(),
+            isThisWeekScrape: false,
+            "Unable to run weekly scrape");
+    }
+
+    private async Task ScrapeThisWeekAsync()
+    {
+        await RunScrapeAsync(
+            () => Scraper.ScrapeThisWeekAsync(),
+            isThisWeekScrape: true,
+            "Unable to run this week scrape");
+    }
+
+    private async Task RunScrapeAsync(
+        Func<Task<WeeklyScrapeResult>> scrape,
+        bool isThisWeekScrape,
+        string errorPrefix)
+    {
+        if (_isScraping)
+        {
+            return;
+        }
+
         _isScraping = true;
+        _isScrapingThisWeek = isThisWeekScrape;
+        _isScrapingWeekly = !isThisWeekScrape;
         _errorMessage = null;
 
         try
         {
-            _lastResult = await Scraper.ScrapeWeeklyAsync();
+            _lastResult = await scrape();
             _applicationPage = 1;
             await RefreshAsync();
         }
         catch (Exception ex)
         {
-            _errorMessage = $"Unable to run weekly scrape: {ex.Message}";
+            _errorMessage = $"{errorPrefix}: {ex.Message}";
         }
         finally
         {
             _isScraping = false;
+            _isScrapingWeekly = false;
+            _isScrapingThisWeek = false;
         }
     }
 
