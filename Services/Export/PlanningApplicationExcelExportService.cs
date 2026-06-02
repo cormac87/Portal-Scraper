@@ -371,7 +371,8 @@ FROM [RankedApplications]
     [application].[ReceivedDate] DESC,
     [application].[ApplicationReference],
     [application].[Title],
-    [application].[Id]");
+    [application].[Id]
+OPTION (MAXDOP 1)");
 
         return sql.ToString();
     }

@@ -400,7 +400,8 @@ SELECT
 FROM [PagedApplications]
 WHERE [RowNumber] > (([CurrentPage] - 1) * @Take)
     AND [RowNumber] <= ([CurrentPage] * @Take)
-ORDER BY [RowNumber]");
+ORDER BY [RowNumber]
+OPTION (MAXDOP 1)");
 
         return sql.ToString();
     }
