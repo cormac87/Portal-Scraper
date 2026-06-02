@@ -92,6 +92,7 @@ SELECT CAST(
         CancellationToken cancellationToken = default)
     {
         var searchFilters = NormalizeFilters(filters);
+        var normalizedPageSize = Math.Max(1, pageSize);
         if (criteria.Count == 0 && !searchFilters.HasActive)
         {
             return new PlanningKeywordSearchPage([], 0, 1, IsFullTextSearchAvailable: true);
@@ -109,7 +110,7 @@ SELECT CAST(
                 db,
                 searchFilters,
                 page,
-                pageSize,
+                normalizedPageSize,
                 cancellationToken);
         }
 
@@ -121,19 +122,13 @@ SELECT CAST(
         var searchConditions = criteria
             .Select(criterion => criterion.SearchCondition)
             .ToList();
-        var totalCount = await ExecuteSearchCountAsync(db, searchConditions, searchFilters, cancellationToken);
-        var currentPage = PlanningPagination.ClampPage(page, totalCount, pageSize);
-        var results = totalCount == 0
-            ? []
-            : await ExecuteSearchAsync(
-                db,
-                searchConditions,
-                searchFilters,
-                PlanningPagination.GetPageSkip(currentPage, pageSize),
-                pageSize,
-                cancellationToken);
-
-        return new PlanningKeywordSearchPage(results, totalCount, currentPage, IsFullTextSearchAvailable: true);
+        return await ExecuteSearchPageAsync(
+            db,
+            searchConditions,
+            searchFilters,
+            page,
+            normalizedPageSize,
+            cancellationToken);
     }
 
     private static NormalizedSearchFilters NormalizeFilters(PlanningApplicationSearchFilters? filters)
@@ -231,15 +226,17 @@ SELECT CAST(
             && Convert.ToInt32(result, CultureInfo.InvariantCulture) == 1;
     }
 
-    private static async Task<List<PlanningSearchResult>> ExecuteSearchAsync(
+    private static async Task<PlanningKeywordSearchPage> ExecuteSearchPageAsync(
         ApplicationDbContext db,
         IReadOnlyList<string> searchConditions,
         NormalizedSearchFilters filters,
-        int skip,
+        int requestedPage,
         int take,
         CancellationToken cancellationToken)
     {
         var results = new List<PlanningSearchResult>();
+        var totalCount = 0;
+        var currentPage = 1;
         var connection = db.Database.GetDbConnection();
         var shouldCloseConnection = connection.State == ConnectionState.Closed;
 
@@ -251,16 +248,19 @@ SELECT CAST(
         try
         {
             await using var command = connection.CreateCommand();
-            command.CommandText = BuildKeywordSearchSql(searchConditions.Count, filters);
+            ApplyConfiguredCommandTimeout(db, command);
+            command.CommandText = BuildKeywordSearchPageSql(searchConditions.Count, filters);
             AddSearchConditionParameters(command, searchConditions);
             AddFilterParameters(command, filters);
             AddParameter(command, "@SearchCriteriaCount", searchConditions.Count);
-            AddParameter(command, "@Skip", skip);
+            AddParameter(command, "@RequestedPage", requestedPage);
             AddParameter(command, "@Take", take);
 
             await using var reader = await command.ExecuteReaderAsync(cancellationToken);
             while (await reader.ReadAsync(cancellationToken))
             {
+                totalCount = reader.GetInt32(reader.GetOrdinal("TotalCount"));
+                currentPage = reader.GetInt32(reader.GetOrdinal("CurrentPage"));
                 results.Add(new PlanningSearchResult
                 {
                     MatchType = reader.GetString(reader.GetOrdinal("MatchType")),
@@ -290,10 +290,10 @@ SELECT CAST(
             }
         }
 
-        return results;
+        return new PlanningKeywordSearchPage(results, totalCount, currentPage, IsFullTextSearchAvailable: true);
     }
 
-    private static string BuildKeywordSearchSql(int searchCriteriaCount, NormalizedSearchFilters filters)
+    private static string BuildKeywordSearchPageSql(int searchCriteriaCount, NormalizedSearchFilters filters)
     {
         var sql = new StringBuilder();
         AppendMatchedApplicationsCte(sql, searchCriteriaCount, includeRankAndFlags: true);
@@ -308,67 +308,99 @@ RankedApplications AS
     FROM [MatchedApplications]
     GROUP BY [PlanningApplicationId]
     HAVING COUNT(DISTINCT [CriterionIndex]) = @SearchCriteriaCount
-)
-SELECT
-    CAST(
-        CASE
-            WHEN [RankedApplications].[HasApplicationMatch] = 1 AND [RankedApplications].[HasDocumentMatch] = 1 THEN N'Application + Document'
-            WHEN [RankedApplications].[HasDocumentMatch] = 1 THEN N'Document'
-            ELSE N'Application'
-        END AS nvarchar(30)) AS [MatchType],
-    [application].[Id] AS [PlanningApplicationId],
-    CAST(NULL AS uniqueidentifier) AS [PlanningDocumentId],
-    [authority].[Name] AS [PlanningAuthorityName],
-    [application].[ApplicationReference] AS [ApplicationReference],
-    [application].[Title] AS [ApplicationTitle],
-    [application].[Status] AS [Status],
-    [application].[Address] AS [Address],
-    [application].[ReceivedDate] AS [ReceivedDate],
-    [application].[ValidatedDate] AS [ValidatedDate],
-    CAST(NULL AS nvarchar(255)) AS [DocumentName],
-    CAST(NULL AS nvarchar(50)) AS [DocumentType],
-    [application].[SourceUrl] AS [Url],
-    CAST(NULL AS datetime2(7)) AS [PublishedDate],
-    [RankedApplications].[SearchRank],
-    CAST(NULL AS nvarchar(max)) AS [PreviewText]
-FROM [RankedApplications]
-    INNER JOIN [dbo].[PlanningApplication] AS [application]
-        ON [application].[Id] = [RankedApplications].[PlanningApplicationId]
-    INNER JOIN [dbo].[PlanningAuthority] AS [authority]
-        ON [authority].[Id] = [application].[PlanningAuthorityId]
+),
+NumberedApplications AS
+(
+    SELECT
+        CAST(
+            CASE
+                WHEN [RankedApplications].[HasApplicationMatch] = 1 AND [RankedApplications].[HasDocumentMatch] = 1 THEN N'Application + Document'
+                WHEN [RankedApplications].[HasDocumentMatch] = 1 THEN N'Document'
+                ELSE N'Application'
+            END AS nvarchar(30)) AS [MatchType],
+        [application].[Id] AS [PlanningApplicationId],
+        CAST(NULL AS uniqueidentifier) AS [PlanningDocumentId],
+        [authority].[Name] AS [PlanningAuthorityName],
+        [application].[ApplicationReference] AS [ApplicationReference],
+        [application].[Title] AS [ApplicationTitle],
+        [application].[Status] AS [Status],
+        [application].[Address] AS [Address],
+        [application].[ReceivedDate] AS [ReceivedDate],
+        [application].[ValidatedDate] AS [ValidatedDate],
+        CAST(NULL AS nvarchar(255)) AS [DocumentName],
+        CAST(NULL AS nvarchar(50)) AS [DocumentType],
+        [application].[SourceUrl] AS [Url],
+        CAST(NULL AS datetime2(7)) AS [PublishedDate],
+        [RankedApplications].[SearchRank],
+        CAST(NULL AS nvarchar(max)) AS [PreviewText],
+        CAST(COUNT_BIG(*) OVER() AS int) AS [TotalCount],
+        ROW_NUMBER() OVER (
+            ORDER BY [RankedApplications].[SearchRank] DESC,
+                [application].[ValidatedDate] DESC,
+                [application].[ReceivedDate] DESC,
+                [application].[ApplicationReference],
+                [application].[Title],
+                [application].[Id]) AS [RowNumber]
+    FROM [RankedApplications]
+        INNER JOIN [dbo].[PlanningApplication] AS [application]
+            ON [application].[Id] = [RankedApplications].[PlanningApplicationId]
+        INNER JOIN [dbo].[PlanningAuthority] AS [authority]
+            ON [authority].[Id] = [application].[PlanningAuthorityId]
 ");
         AppendApplicationFilterWhereClause(sql, filters);
-        sql.AppendLine(@"ORDER BY [RankedApplications].[SearchRank] DESC,
-    [application].[ValidatedDate] DESC,
-    [application].[ReceivedDate] DESC,
-    [application].[ApplicationReference],
-    [application].[Title],
-    [application].[Id]
-OFFSET @Skip ROWS FETCH NEXT @Take ROWS ONLY");
-
-        return sql.ToString();
-    }
-
-    private static string BuildKeywordSearchCountSql(int searchCriteriaCount, NormalizedSearchFilters filters)
-    {
-        var sql = new StringBuilder();
-        AppendMatchedApplicationsCte(sql, searchCriteriaCount, includeRankAndFlags: false);
-        sql.AppendLine(@",
-RankedApplications AS
+        sql.AppendLine(@"),
+PagedApplications AS
 (
-    SELECT [PlanningApplicationId]
-    FROM [MatchedApplications]
-    GROUP BY [PlanningApplicationId]
-    HAVING COUNT(DISTINCT [CriterionIndex]) = @SearchCriteriaCount
+    SELECT
+        [MatchType],
+        [PlanningApplicationId],
+        [PlanningDocumentId],
+        [PlanningAuthorityName],
+        [ApplicationReference],
+        [ApplicationTitle],
+        [Status],
+        [Address],
+        [ReceivedDate],
+        [ValidatedDate],
+        [DocumentName],
+        [DocumentType],
+        [Url],
+        [PublishedDate],
+        [SearchRank],
+        [PreviewText],
+        [TotalCount],
+        [RowNumber],
+        CASE
+            WHEN @RequestedPage < 1 THEN 1
+            WHEN @RequestedPage > CEILING([TotalCount] / CONVERT(float, @Take))
+                THEN CONVERT(int, CEILING([TotalCount] / CONVERT(float, @Take)))
+            ELSE @RequestedPage
+        END AS [CurrentPage]
+    FROM [NumberedApplications]
 )
-SELECT CAST(COUNT_BIG(*) AS int) AS [Value]
-FROM [RankedApplications]");
-        if (filters.HasActive)
-        {
-            sql.AppendLine(@"INNER JOIN [dbo].[PlanningApplication] AS [application]
-    ON [application].[Id] = [RankedApplications].[PlanningApplicationId]");
-            AppendApplicationFilterWhereClause(sql, filters);
-        }
+SELECT
+    [MatchType],
+    [PlanningApplicationId],
+    [PlanningDocumentId],
+    [PlanningAuthorityName],
+    [ApplicationReference],
+    [ApplicationTitle],
+    [Status],
+    [Address],
+    [ReceivedDate],
+    [ValidatedDate],
+    [DocumentName],
+    [DocumentType],
+    [Url],
+    [PublishedDate],
+    [SearchRank],
+    [PreviewText],
+    [TotalCount],
+    [CurrentPage]
+FROM [PagedApplications]
+WHERE [RowNumber] > (([CurrentPage] - 1) * @Take)
+    AND [RowNumber] <= ([CurrentPage] * @Take)
+ORDER BY [RowNumber]");
 
         return sql.ToString();
     }
@@ -443,42 +475,6 @@ FROM [RankedApplications]");
     FROM CONTAINSTABLE([dbo].[PlanningApplication], ([Title], [Description], [Address]), @SearchCondition{index}) AS [matches]");
     }
 
-    private static async Task<int> ExecuteSearchCountAsync(
-        ApplicationDbContext db,
-        IReadOnlyList<string> searchConditions,
-        NormalizedSearchFilters filters,
-        CancellationToken cancellationToken)
-    {
-        var connection = db.Database.GetDbConnection();
-        var shouldCloseConnection = connection.State == ConnectionState.Closed;
-
-        if (shouldCloseConnection)
-        {
-            await connection.OpenAsync(cancellationToken);
-        }
-
-        try
-        {
-            await using var command = connection.CreateCommand();
-            command.CommandText = BuildKeywordSearchCountSql(searchConditions.Count, filters);
-            AddSearchConditionParameters(command, searchConditions);
-            AddFilterParameters(command, filters);
-            AddParameter(command, "@SearchCriteriaCount", searchConditions.Count);
-            var result = await command.ExecuteScalarAsync(cancellationToken);
-
-            return result is null || result == DBNull.Value
-                ? 0
-                : Convert.ToInt32(result, CultureInfo.InvariantCulture);
-        }
-        finally
-        {
-            if (shouldCloseConnection)
-            {
-                await connection.CloseAsync();
-            }
-        }
-    }
-
     private static async Task<object?> ExecuteScalarAsync(
         ApplicationDbContext db,
         string commandText,
@@ -495,6 +491,7 @@ FROM [RankedApplications]");
         try
         {
             await using var command = connection.CreateCommand();
+            ApplyConfiguredCommandTimeout(db, command);
             command.CommandText = commandText;
 
             return await command.ExecuteScalarAsync(cancellationToken);
@@ -505,6 +502,15 @@ FROM [RankedApplications]");
             {
                 await connection.CloseAsync();
             }
+        }
+    }
+
+    private static void ApplyConfiguredCommandTimeout(ApplicationDbContext db, DbCommand command)
+    {
+        var commandTimeout = db.Database.GetCommandTimeout();
+        if (commandTimeout.HasValue)
+        {
+            command.CommandTimeout = commandTimeout.Value;
         }
     }
 

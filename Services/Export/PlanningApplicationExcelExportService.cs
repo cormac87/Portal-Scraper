@@ -187,6 +187,7 @@ SELECT CAST(
         try
         {
             await using var command = connection.CreateCommand();
+            ApplyConfiguredCommandTimeout(db, command);
             command.CommandText = commandText;
 
             return await command.ExecuteScalarAsync(cancellationToken);
@@ -277,6 +278,7 @@ SELECT CAST(
         try
         {
             await using var command = connection.CreateCommand();
+            ApplyConfiguredCommandTimeout(db, command);
             command.CommandText = BuildExportSearchSql(searchConditions.Count, filters);
             AddSearchConditionParameters(command, searchConditions);
             AddFilterParameters(command, filters);
@@ -315,6 +317,15 @@ SELECT CAST(
         }
 
         return rows;
+    }
+
+    private static void ApplyConfiguredCommandTimeout(ApplicationDbContext db, DbCommand command)
+    {
+        var commandTimeout = db.Database.GetCommandTimeout();
+        if (commandTimeout.HasValue)
+        {
+            command.CommandTimeout = commandTimeout.Value;
+        }
     }
 
     private static string BuildExportSearchSql(int searchCriteriaCount, NormalizedExportFilters filters)

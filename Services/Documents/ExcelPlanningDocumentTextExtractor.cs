@@ -11,6 +11,7 @@ public sealed class ExcelPlanningDocumentTextExtractor : PlanningDocumentTextExt
         new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
             ".xls",
+            ".xlsm",
             ".xlsx"
         };
 
@@ -18,6 +19,7 @@ public sealed class ExcelPlanningDocumentTextExtractor : PlanningDocumentTextExt
         new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
             "application/vnd.ms-excel",
+            "application/vnd.ms-excel.sheet.macroEnabled.12",
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         };
 

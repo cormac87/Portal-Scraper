@@ -17,7 +17,8 @@ builder.Services.AddRazorComponents()
     .AddInteractiveServerComponents();
 
 builder.Services.AddDbContextFactory<ApplicationDbContext>(options =>
-    options.UseSqlServer(connectionString));
+    options.UseSqlServer(connectionString, sqlOptions =>
+        sqlOptions.CommandTimeout(1080)));
 builder.Services.Configure<PlanningPortalScraperOptions>(
     builder.Configuration.GetSection(PlanningPortalScraperOptions.SectionName));
 builder.Services.Configure<GoogleMapsGeocodingOptions>(
