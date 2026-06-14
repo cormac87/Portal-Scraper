@@ -61,16 +61,19 @@ SELECT CAST(
 
         foreach (var criterion in criteria)
         {
-            var displayText = criterion.Text.Trim();
-            var searchTerms = ExtractSearchTerms(displayText);
+            var alternatives = BuildSearchAlternatives(criterion);
 
-            if (searchTerms.Count > 0)
+            if (alternatives.Count > 0)
             {
                 searchCriteria.Add(new FullTextSearchCriterion
                 {
-                    DisplayText = displayText,
-                    SearchCondition = BuildFullTextSearchCondition(searchTerms, criterion.RequireAdjacentWords),
-                    SearchTerms = searchTerms,
+                    DisplayText = FormatCriterionDisplayText(alternatives),
+                    SearchCondition = BuildFullTextSearchCondition(alternatives),
+                    SearchTerms = alternatives
+                        .SelectMany(alternative => alternative.SearchTerms)
+                        .Distinct(StringComparer.OrdinalIgnoreCase)
+                        .ToList(),
+                    Alternatives = alternatives,
                     RequireAdjacentWords = criterion.RequireAdjacentWords
                 });
             }
@@ -612,6 +615,55 @@ OPTION (MAXDOP 1)");
             .Take(10)
             .Select(term => term.Length > 50 ? term[..50] : term)
             .ToList();
+    }
+
+    private static List<FullTextSearchCriterionAlternative> BuildSearchAlternatives(PlanningSearchCriterionInput criterion)
+    {
+        var alternatives = new List<FullTextSearchCriterionAlternative>();
+
+        AddSearchAlternative(alternatives, criterion.Text, criterion.RequireAdjacentWords);
+        foreach (var orKeyword in criterion.OrKeywords)
+        {
+            AddSearchAlternative(alternatives, orKeyword.Text, criterion.RequireAdjacentWords);
+        }
+
+        return alternatives;
+    }
+
+    private static void AddSearchAlternative(
+        List<FullTextSearchCriterionAlternative> alternatives,
+        string? value,
+        bool requireAdjacentWords)
+    {
+        var displayText = value?.Trim();
+        var searchTerms = ExtractSearchTerms(displayText);
+
+        if (displayText is null || searchTerms.Count == 0)
+        {
+            return;
+        }
+
+        alternatives.Add(new FullTextSearchCriterionAlternative
+        {
+            DisplayText = displayText,
+            SearchCondition = BuildFullTextSearchCondition(searchTerms, requireAdjacentWords),
+            SearchTerms = searchTerms
+        });
+    }
+
+    private static string FormatCriterionDisplayText(IReadOnlyList<FullTextSearchCriterionAlternative> alternatives)
+    {
+        return string.Join(" OR ", alternatives.Select(alternative => alternative.DisplayText));
+    }
+
+    private static string BuildFullTextSearchCondition(IReadOnlyList<FullTextSearchCriterionAlternative> alternatives)
+    {
+        if (alternatives.Count == 1)
+        {
+            return alternatives[0].SearchCondition;
+        }
+
+        return string.Join(" OR ", alternatives.Select(alternative => $"({alternative.SearchCondition})"));
     }
 
     private static string BuildFullTextSearchCondition(IReadOnlyList<string> searchTerms, bool requireAdjacentWords)

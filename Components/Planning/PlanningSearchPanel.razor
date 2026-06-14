@@ -5,29 +5,66 @@
             @for (var index = 0; index < Criteria.Count; index++)
             {
                 var criterion = Criteria[index];
-                <div class="planning-search-row" @key="criterion">
-                    <div class="planning-search-input">
-                        <input id="@GetSearchCriterionInputId(index)"
-                               class="text-input"
-                               placeholder="@GetSearchCriterionPlaceholder(index)"
-                               aria-label="@GetSearchCriterionLabel(index)"
-                               @bind="criterion.Text"
-                               @bind:event="oninput"
-                               @onkeydown="HandleKeywordKeyDownAsync" />
-                        <button class="icon-button search-settings-button"
-                                type="button"
-                                title="Search settings"
-                                aria-label="@GetSearchCriterionSettingsLabel(index)"
-                                aria-haspopup="dialog"
-                                @onclick="() => OpenSettingsAsync(criterion)">
-                            <span aria-hidden="true">&#9881;</span>
-                        </button>
+                <div class="planning-search-criterion" @key="criterion">
+                    <div class="planning-search-row">
+                        <div class="planning-search-input">
+                            <input id="@GetSearchCriterionInputId(index)"
+                                   class="text-input"
+                                   placeholder="@GetSearchCriterionPlaceholder(index)"
+                                   aria-label="@GetSearchCriterionLabel(index)"
+                                   @bind="criterion.Text"
+                                   @bind:event="oninput"
+                                   @onkeydown="HandleKeywordKeyDownAsync" />
+                            <button class="icon-button search-settings-button"
+                                    type="button"
+                                    title="Search settings"
+                                    aria-label="@GetSearchCriterionSettingsLabel(index)"
+                                    aria-haspopup="dialog"
+                                    @onclick="() => OpenSettingsAsync(criterion)">
+                                <span aria-hidden="true">&#9881;</span>
+                            </button>
+                            <button class="secondary-button or-keyword-button"
+                                    type="button"
+                                    title="Add OR keyword"
+                                    aria-label="@GetAddOrKeywordLabel(index)"
+                                    @onclick="() => AddOrKeyword(criterion)"
+                                    disabled="@IsSearching">
+                                OR
+                            </button>
+                        </div>
+                        @if (Criteria.Count > 1)
+                        {
+                            <button class="secondary-button" type="button" @onclick="() => RemoveCriterionAsync(criterion)" disabled="@IsSearching">
+                                Remove
+                            </button>
+                        }
                     </div>
-                    @if (Criteria.Count > 1)
+                    @for (var orIndex = 0; orIndex < criterion.OrKeywords.Count; orIndex++)
                     {
-                        <button class="secondary-button" type="button" @onclick="() => RemoveCriterionAsync(criterion)" disabled="@IsSearching">
-                            Remove
-                        </button>
+                        var orKeyword = criterion.OrKeywords[orIndex];
+                        <div class="planning-search-row planning-search-or-row" @key="orKeyword">
+                            <span class="or-keyword-label" aria-hidden="true">OR</span>
+                            <div class="planning-search-input">
+                                <input id="@GetOrKeywordInputId(index, orIndex)"
+                                       class="text-input"
+                                       placeholder="Alternative keyword criteria"
+                                       aria-label="@GetOrKeywordLabel(index, orIndex)"
+                                       @bind="orKeyword.Text"
+                                       @bind:event="oninput"
+                                       @onkeydown="HandleKeywordKeyDownAsync" />
+                                <button class="secondary-button or-keyword-button"
+                                        type="button"
+                                        title="Add OR keyword"
+                                        aria-label="@GetAddOrKeywordLabel(index)"
+                                        @onclick="() => AddOrKeyword(criterion)"
+                                        disabled="@IsSearching">
+                                    OR
+                                </button>
+                            </div>
+                            <button class="secondary-button" type="button" @onclick="() => RemoveOrKeyword(criterion, orKeyword)" disabled="@IsSearching">
+                                Remove
+                            </button>
+                        </div>
                     }
                 </div>
             }
@@ -183,6 +220,26 @@
         return OnOpenSettings.InvokeAsync(criterion);
     }
 
+    private void AddOrKeyword(PlanningSearchCriterionInput criterion)
+    {
+        if (IsSearching)
+        {
+            return;
+        }
+
+        criterion.OrKeywords.Add(new PlanningSearchKeywordInput());
+    }
+
+    private void RemoveOrKeyword(PlanningSearchCriterionInput criterion, PlanningSearchKeywordInput keyword)
+    {
+        if (IsSearching)
+        {
+            return;
+        }
+
+        criterion.OrKeywords.Remove(keyword);
+    }
+
     private Task HandleKeywordKeyDownAsync(KeyboardEventArgs args)
     {
         return string.Equals(args.Key, "Enter", StringComparison.OrdinalIgnoreCase)
@@ -238,6 +295,21 @@
     private static string GetSearchCriterionSettingsLabel(int index)
     {
         return $"Open settings for keyword search criterion {index + 1}";
+    }
+
+    private static string GetAddOrKeywordLabel(int index)
+    {
+        return $"Add OR keyword for keyword search criterion {index + 1}";
+    }
+
+    private static string GetOrKeywordInputId(int criterionIndex, int orKeywordIndex)
+    {
+        return $"planning-keyword-{criterionIndex}-or-{orKeywordIndex}";
+    }
+
+    private static string GetOrKeywordLabel(int criterionIndex, int orKeywordIndex)
+    {
+        return $"OR keyword {orKeywordIndex + 1} for keyword search criterion {criterionIndex + 1}";
     }
 
     private static string GetSearchCriterionPlaceholder(int index)

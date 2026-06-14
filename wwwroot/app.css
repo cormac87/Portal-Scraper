@@ -345,10 +345,19 @@ code {
     gap: 0.6rem;
 }
 
+.planning-search-criterion {
+    display: grid;
+    gap: 0.45rem;
+}
+
 .planning-search-row {
     display: flex;
     gap: 0.75rem;
     align-items: center;
+}
+
+.planning-search-or-row {
+    padding-left: 0.75rem;
 }
 
 .planning-search-input {
@@ -356,6 +365,19 @@ code {
     width: min(44rem, 100%);
     gap: 0.55rem;
     align-items: center;
+}
+
+.or-keyword-label {
+    flex: 0 0 2rem;
+    color: var(--muted);
+    font-size: 0.8rem;
+    font-weight: 700;
+    letter-spacing: 0;
+    text-align: right;
+}
+
+.or-keyword-button {
+    white-space: nowrap;
 }
 
 .planning-search-row .text-input {
@@ -1180,6 +1202,14 @@ code {
     .planning-search-row .text-input {
         width: 100%;
         max-width: none;
+    }
+
+    .planning-search-or-row {
+        padding-left: 0;
+    }
+
+    .or-keyword-label {
+        text-align: left;
     }
 
     .modal-backdrop {

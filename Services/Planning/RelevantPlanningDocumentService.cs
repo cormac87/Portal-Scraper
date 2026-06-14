@@ -142,19 +142,40 @@ public sealed class RelevantPlanningDocumentService : IRelevantPlanningDocumentS
         FullTextSearchCriterion criterion,
         IReadOnlyList<TextWord> documentWords)
     {
-        if (criterion.RequireAdjacentWords && criterion.SearchTerms.Count > 1)
+        if (criterion.Alternatives.Count > 0)
         {
-            return FindAdjacentSearchTermRanges(criterion.SearchTerms, documentWords);
+            return criterion.Alternatives
+                .SelectMany(alternative => GetSearchTermWordMatchRanges(
+                    alternative.SearchTerms,
+                    criterion.RequireAdjacentWords,
+                    documentWords))
+                .ToList();
         }
 
-        if (!criterion.SearchTerms.All(term => documentWords.Any(word => WordMatchesSearchTerm(word.Text, term))))
+        return GetSearchTermWordMatchRanges(
+            criterion.SearchTerms,
+            criterion.RequireAdjacentWords,
+            documentWords);
+    }
+
+    private static List<WordRange> GetSearchTermWordMatchRanges(
+        IReadOnlyList<string> searchTerms,
+        bool requireAdjacentWords,
+        IReadOnlyList<TextWord> documentWords)
+    {
+        if (requireAdjacentWords && searchTerms.Count > 1)
+        {
+            return FindAdjacentSearchTermRanges(searchTerms, documentWords);
+        }
+
+        if (!searchTerms.All(term => documentWords.Any(word => WordMatchesSearchTerm(word.Text, term))))
         {
             return [];
         }
 
         return documentWords
             .Select((word, index) => new { Word = word, Index = index })
-            .Where(item => criterion.SearchTerms.Any(term => WordMatchesSearchTerm(item.Word.Text, term)))
+            .Where(item => searchTerms.Any(term => WordMatchesSearchTerm(item.Word.Text, term)))
             .Select(item => new WordRange
             {
                 StartWordIndex = item.Index,
