@@ -1,0 +1,309 @@
+@page "/companies"
+@using System.IO
+@inject ICompanyDataService CompanyDataService
+@inject ICompanyExcelExportService ExcelExportService
+@inject IJSRuntime JS
+
+<PageTitle>Companies</PageTitle>
+
+<section class="page-header">
+    <div>
+        <p class="eyebrow">Companies House</p>
+        <h1>Companies</h1>
+    </div>
+    <div class="page-header-actions">
+        <a class="secondary-button" href="/companies/upload">Upload company data</a>
+        <button class="secondary-button" type="button" @onclick="OpenExportColumnsModal" disabled="@(!CanExportResults)">
+            Export Results to Excel
+        </button>
+    </div>
+</section>
+
+<section class="planning-summary">
+    <article class="stat-card">
+        <span>Total companies</span>
+        <strong>@_companyTotalCount.ToString("N0")</strong>
+    </article>
+    <article class="stat-card">
+        <span>SIC codes</span>
+        <strong>@_sicCodeOptions.Count.ToString("N0")</strong>
+    </article>
+</section>
+
+<section class="planning-search">
+    <form class="company-search-form" @onsubmit="SearchAsync" @onsubmit:preventDefault="true">
+        <label>
+            <span class="field-label">Company name</span>
+            <input class="text-input"
+                   value="@_companyName"
+                   @oninput="OnCompanyNameInput"
+                   placeholder="Search by company name" />
+        </label>
+
+        <label>
+            <span class="field-label">SIC code</span>
+            <select class="text-input" @bind="_selectedSicCode">
+                <option value="">All SIC codes</option>
+                @foreach (var option in _sicCodeOptions)
+                {
+                    <option value="@option.Code">@option.Label</option>
+                }
+            </select>
+        </label>
+
+        <div class="planning-search-actions">
+            <button class="primary-button" type="submit" disabled="@_isSearching">
+                @SearchButtonLabel
+            </button>
+            <button class="secondary-button" type="button" @onclick="ClearSearchAsync" disabled="@_isSearching">
+                Clear
+            </button>
+            <p class="search-summary">@PaginationSummary</p>
+        </div>
+    </form>
+</section>
+
+@if (_isExportColumnsModalOpen)
+{
+    <CompanyExportColumnsModal AvailableColumns="@ExportColumns"
+                               ResultCount="@_companyTotalCount"
+                               OnDone="ExportSearchResultsAsync"
+                               OnCancel="CloseExportColumnsModal" />
+}
+
+@if (!string.IsNullOrWhiteSpace(_errorMessage))
+{
+    <p class="error-message">@_errorMessage</p>
+}
+
+@if (_isLoading || _isSearching)
+{
+    <section class="empty-state">
+        <h2>Loading companies</h2>
+        <p>Reading company records from the database.</p>
+    </section>
+}
+else if (_companies.Count == 0)
+{
+    <section class="empty-state">
+        <h2>No companies found</h2>
+        <p>Upload company data or adjust the current search.</p>
+    </section>
+}
+else
+{
+    <PaginationControls Summary="@PaginationSummary"
+                        CurrentPage="@_companyPage"
+                        TotalPages="@CompanyTotalPages"
+                        IsBusy="@(_isLoading || _isSearching)"
+                        OnPrevious="PreviousCompanyPageAsync"
+                        OnNext="NextCompanyPageAsync" />
+
+    <section class="planning-list">
+        @foreach (var company in _companies)
+        {
+            <CompanyCard @key="company.Id"
+                         Company="@company"
+                         OnOpen="OpenCompanyModalAsync" />
+        }
+    </section>
+
+    <PaginationControls Summary="@PaginationSummary"
+                        CurrentPage="@_companyPage"
+                        TotalPages="@CompanyTotalPages"
+                        IsBusy="@(_isLoading || _isSearching)"
+                        OnPrevious="PreviousCompanyPageAsync"
+                        OnNext="NextCompanyPageAsync" />
+}
+
+@if (_isCompanyModalOpen && _selectedCompany is not null)
+{
+    <CompanyDetailsModal Company="@_selectedCompany"
+                         OnClose="CloseCompanyModal" />
+}
+
+@code {
+    private const int CompanyPageSize = 20;
+
+    private List<Company> _companies = [];
+    private List<CompanySicCodeOption> _sicCodeOptions = [];
+    private CompanySearchFilters _lastFilters = CompanySearchFilters.Empty;
+    private Company? _selectedCompany;
+    private string? _companyName;
+    private string? _selectedSicCode;
+    private string? _errorMessage;
+    private int _companyPage = 1;
+    private int _companyTotalCount;
+    private bool _isLoading = true;
+    private bool _isSearching;
+    private bool _isExporting;
+    private bool _isExportColumnsModalOpen;
+    private bool _isCompanyModalOpen;
+
+    private int CompanyTotalPages => PlanningPagination.GetTotalPages(_companyTotalCount, CompanyPageSize);
+    private string PaginationSummary => PlanningPagination.GetSummary(_companyTotalCount, _companyPage, CompanyPageSize, "company");
+    private string SearchButtonLabel => _isSearching ? "Searching..." : "Search";
+    private IReadOnlyList<CompanyExportColumn> ExportColumns => ExcelExportService.GetAvailableColumns();
+    private bool CanExportResults => !_isLoading && !_isSearching && !_isExporting && _companyTotalCount > 0;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadSicCodeOptionsAsync();
+        await LoadCompanyPageAsync();
+    }
+
+    private async Task LoadSicCodeOptionsAsync()
+    {
+        try
+        {
+            _sicCodeOptions = (await CompanyDataService.GetSicCodeOptionsAsync()).ToList();
+        }
+        catch (Exception ex)
+        {
+            _errorMessage = $"Unable to load SIC codes: {ex.Message}";
+        }
+    }
+
+    private async Task SearchAsync()
+    {
+        _companyPage = 1;
+        _lastFilters = new CompanySearchFilters(_companyName, _selectedSicCode);
+        await LoadCompanyPageAsync();
+    }
+
+    private async Task ClearSearchAsync()
+    {
+        _companyName = null;
+        _selectedSicCode = null;
+        _companyPage = 1;
+        _lastFilters = CompanySearchFilters.Empty;
+        await LoadCompanyPageAsync();
+    }
+
+    private async Task LoadCompanyPageAsync()
+    {
+        _isLoading = !_isSearching;
+        _isSearching = true;
+        _errorMessage = null;
+
+        try
+        {
+            var page = await CompanyDataService.SearchCompaniesAsync(_lastFilters, _companyPage, CompanyPageSize);
+            _companies = page.Companies.ToList();
+            _companyPage = page.CurrentPage;
+            _companyTotalCount = page.TotalCount;
+        }
+        catch (Exception ex)
+        {
+            _companies = [];
+            _companyTotalCount = 0;
+            _errorMessage = $"Unable to load companies: {ex.Message}";
+        }
+        finally
+        {
+            _isLoading = false;
+            _isSearching = false;
+        }
+    }
+
+    private async Task PreviousCompanyPageAsync()
+    {
+        if (_companyPage <= 1)
+        {
+            return;
+        }
+
+        _companyPage--;
+        await LoadCompanyPageAsync();
+    }
+
+    private async Task NextCompanyPageAsync()
+    {
+        if (_companyPage >= CompanyTotalPages)
+        {
+            return;
+        }
+
+        _companyPage++;
+        await LoadCompanyPageAsync();
+    }
+
+    private async Task OpenCompanyModalAsync(Guid companyId)
+    {
+        _errorMessage = null;
+
+        try
+        {
+            _selectedCompany = await CompanyDataService.GetCompanyAsync(companyId);
+
+            if (_selectedCompany is null)
+            {
+                _isCompanyModalOpen = false;
+                _errorMessage = "Unable to find the selected company.";
+                return;
+            }
+
+            _isCompanyModalOpen = true;
+        }
+        catch (Exception ex)
+        {
+            _isCompanyModalOpen = false;
+            _selectedCompany = null;
+            _errorMessage = $"Unable to load company details: {ex.Message}";
+        }
+    }
+
+    private void CloseCompanyModal()
+    {
+        _isCompanyModalOpen = false;
+        _selectedCompany = null;
+    }
+
+    private void OpenExportColumnsModal()
+    {
+        if (!CanExportResults)
+        {
+            return;
+        }
+
+        _errorMessage = null;
+        _isExportColumnsModalOpen = true;
+    }
+
+    private void CloseExportColumnsModal()
+    {
+        _isExportColumnsModalOpen = false;
+    }
+
+    private async Task ExportSearchResultsAsync(CompanyExportSelection selection)
+    {
+        _isExporting = true;
+        _isExportColumnsModalOpen = false;
+        _errorMessage = null;
+
+        try
+        {
+            var result = await ExcelExportService.ExportSearchResultsAsync(new CompanyExcelExportRequest(
+                _lastFilters,
+                selection.ColumnKeys,
+                selection.CustomColumns));
+
+            using var stream = new MemoryStream(result.Content);
+            using var streamReference = new DotNetStreamReference(stream);
+            await JS.InvokeVoidAsync("portalScraper.downloadFileFromStream", result.FileName, result.ContentType, streamReference);
+        }
+        catch (Exception ex)
+        {
+            _errorMessage = $"Unable to export companies: {ex.Message}";
+        }
+        finally
+        {
+            _isExporting = false;
+        }
+    }
+
+    private void OnCompanyNameInput(ChangeEventArgs args)
+    {
+        _companyName = args.Value?.ToString();
+    }
+}

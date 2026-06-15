@@ -1,0 +1,196 @@
+@using PortalScraper.Services.Companies
+
+<div class="modal-backdrop" @onclick="CancelAsync">
+    <section class="modal-panel export-columns-modal" role="dialog" aria-modal="true" aria-labelledby="company-export-columns-modal-title" @onclick:stopPropagation="true">
+        <header class="modal-header">
+            <div>
+                <p class="planning-authority">@ResultCountText</p>
+                <h2 id="company-export-columns-modal-title">Export Results to Excel</h2>
+            </div>
+            <button class="secondary-button" type="button" @onclick="CancelAsync">Close</button>
+        </header>
+
+        <div class="export-modal-content">
+            <fieldset class="export-fieldset">
+                <legend>Company fields</legend>
+                <div class="export-column-grid">
+                    @foreach (var column in _columnOptions)
+                    {
+                        <label class="export-column-toggle" @key="column.Key">
+                            <input type="checkbox"
+                                   checked="@column.IsSelected"
+                                   @onchange="args => ToggleColumn(column, args)" />
+                            <span>@column.Header</span>
+                        </label>
+                    }
+                </div>
+            </fieldset>
+
+            <fieldset class="export-fieldset">
+                <legend>Custom columns</legend>
+                <div class="custom-column-list">
+                    @if (_customColumns.Count == 0)
+                    {
+                        <p class="document-empty">No custom columns</p>
+                    }
+                    else
+                    {
+                        @foreach (var column in _customColumns)
+                        {
+                            <div class="custom-column-row" @key="column.Id">
+                                <input class="text-input"
+                                       placeholder="Column name"
+                                       aria-label="Custom column name"
+                                       @bind="column.Header"
+                                       @bind:event="oninput" />
+                                <input class="text-input"
+                                       placeholder="Value for each result"
+                                       aria-label="Custom column value"
+                                       @bind="column.Value"
+                                       @bind:event="oninput" />
+                                <button class="secondary-button" type="button" @onclick="() => RemoveCustomColumn(column)">
+                                    Remove
+                                </button>
+                            </div>
+                        }
+                    }
+                </div>
+            </fieldset>
+        </div>
+
+        @if (!string.IsNullOrWhiteSpace(ValidationMessage))
+        {
+            <p class="error-message">@ValidationMessage</p>
+        }
+
+        <footer class="modal-actions export-modal-actions">
+            <button class="secondary-button" type="button" @onclick="AddCustomColumn">New column</button>
+            <div>
+                <button class="primary-button" type="button" @onclick="DoneAsync" disabled="@(!CanSubmit)">Done</button>
+                <button class="secondary-button" type="button" @onclick="CancelAsync">Cancel</button>
+            </div>
+        </footer>
+    </section>
+</div>
+
+@code {
+    private readonly List<ExportColumnOption> _columnOptions = [];
+    private readonly List<CustomColumnInput> _customColumns = [];
+
+    [Parameter]
+    public IReadOnlyList<CompanyExportColumn> AvailableColumns { get; set; } = [];
+
+    [Parameter]
+    public int ResultCount { get; set; }
+
+    [Parameter]
+    public EventCallback<CompanyExportSelection> OnDone { get; set; }
+
+    [Parameter]
+    public EventCallback OnCancel { get; set; }
+
+    private string ResultCountText => ResultCount == 1 ? "1 company" : $"{ResultCount:N0} companies";
+
+    private bool CanSubmit => string.IsNullOrWhiteSpace(ValidationMessage);
+
+    private string? ValidationMessage
+    {
+        get
+        {
+            if (_customColumns.Any(column => string.IsNullOrWhiteSpace(column.Header)))
+            {
+                return "Name each custom column before exporting.";
+            }
+
+            var selectedHeaders = _columnOptions
+                .Where(column => column.IsSelected)
+                .Select(column => column.Header)
+                .Concat(_customColumns.Select(column => column.Header.Trim()))
+                .ToList();
+
+            if (selectedHeaders.Count == 0)
+            {
+                return "Select at least one column.";
+            }
+
+            if (selectedHeaders.Count != selectedHeaders.Distinct(StringComparer.OrdinalIgnoreCase).Count())
+            {
+                return "Column names must be unique.";
+            }
+
+            return null;
+        }
+    }
+
+    protected override void OnParametersSet()
+    {
+        if (_columnOptions.Count > 0)
+        {
+            return;
+        }
+
+        _columnOptions.AddRange(AvailableColumns.Select(column => new ExportColumnOption
+        {
+            Key = column.Key,
+            Header = column.Header,
+            IsSelected = true
+        }));
+    }
+
+    private void ToggleColumn(ExportColumnOption column, ChangeEventArgs args)
+    {
+        column.IsSelected = args.Value is bool isSelected && isSelected;
+    }
+
+    private void AddCustomColumn()
+    {
+        _customColumns.Add(new CustomColumnInput());
+    }
+
+    private void RemoveCustomColumn(CustomColumnInput column)
+    {
+        _customColumns.Remove(column);
+    }
+
+    private async Task DoneAsync()
+    {
+        if (!CanSubmit)
+        {
+            return;
+        }
+
+        var selection = new CompanyExportSelection(
+            _columnOptions
+                .Where(column => column.IsSelected)
+                .Select(column => column.Key)
+                .ToList(),
+            _customColumns
+                .Select(column => new CompanyExportCustomColumn(column.Header.Trim(), column.Value))
+                .ToList());
+
+        await OnDone.InvokeAsync(selection);
+    }
+
+    private async Task CancelAsync()
+    {
+        await OnCancel.InvokeAsync();
+    }
+
+    private sealed class ExportColumnOption
+    {
+        public string Key { get; set; } = string.Empty;
+
+        public string Header { get; set; } = string.Empty;
+
+        public bool IsSelected { get; set; }
+    }
+
+    private sealed class CustomColumnInput
+    {
+        public Guid Id { get; } = Guid.NewGuid();
+
+        public string Header { get; set; } = string.Empty;
+
+        public string Value { get; set; } = string.Empty;
+    }
+}

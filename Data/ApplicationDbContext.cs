@@ -8,6 +8,7 @@ public sealed class ApplicationDbContext(DbContextOptions<ApplicationDbContext> 
     public DbSet<PlanningApplication> PlanningApplications => Set<PlanningApplication>();
     public DbSet<PlanningDocument> PlanningDocuments => Set<PlanningDocument>();
     public DbSet<TodoItem> TodoItems => Set<TodoItem>();
+    public DbSet<Company> Companies => Set<Company>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -168,6 +169,54 @@ public sealed class ApplicationDbContext(DbContextOptions<ApplicationDbContext> 
 
             entity.Property(item => item.CreatedAtUtc)
                 .HasDefaultValueSql("SYSUTCDATETIME()");
+        });
+
+        modelBuilder.Entity<Company>(entity =>
+        {
+            entity.ToTable("Company");
+
+            entity.Property(item => item.Id)
+                .HasDefaultValueSql("NEWID()");
+
+            entity.Property(item => item.CompanyNumber)
+                .HasMaxLength(20)
+                .IsRequired();
+
+            entity.Property(item => item.CompanyName)
+                .HasMaxLength(512);
+
+            entity.Property(item => item.Email)
+                .HasMaxLength(255);
+
+            entity.Property(item => item.PhoneNumber)
+                .HasMaxLength(50);
+
+            entity.Property(item => item.ImportedAtUtc)
+                .HasDefaultValueSql("SYSUTCDATETIME()");
+
+            entity.HasIndex(item => item.CompanyNumber)
+                .IsUnique()
+                .HasDatabaseName("UX_Company_CompanyNumber");
+
+            entity.HasIndex(item => item.CompanyName)
+                .HasDatabaseName("IX_Company_CompanyName")
+                .HasFilter("[CompanyName] IS NOT NULL");
+
+            entity.HasIndex(item => item.SicCodeSicText1)
+                .HasDatabaseName("IX_Company_SicCodeSicText1")
+                .HasFilter("[SicCodeSicText1] IS NOT NULL");
+
+            entity.HasIndex(item => item.SicCodeSicText2)
+                .HasDatabaseName("IX_Company_SicCodeSicText2")
+                .HasFilter("[SicCodeSicText2] IS NOT NULL");
+
+            entity.HasIndex(item => item.SicCodeSicText3)
+                .HasDatabaseName("IX_Company_SicCodeSicText3")
+                .HasFilter("[SicCodeSicText3] IS NOT NULL");
+
+            entity.HasIndex(item => item.SicCodeSicText4)
+                .HasDatabaseName("IX_Company_SicCodeSicText4")
+                .HasFilter("[SicCodeSicText4] IS NOT NULL");
         });
     }
 }

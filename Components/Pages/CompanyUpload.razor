@@ -1,0 +1,81 @@
+@page "/companies/upload"
+@inject ICompanyImportService CompanyImportService
+
+<PageTitle>Upload Companies</PageTitle>
+
+<section class="page-header">
+    <div>
+        <p class="eyebrow">Companies House</p>
+        <h1>Upload company data</h1>
+    </div>
+    <div class="page-header-actions">
+        <a class="secondary-button" href="/companies">Companies</a>
+    </div>
+</section>
+
+<section class="planning-search company-upload-panel">
+    <label class="company-file-picker">
+        <span class="field-label">Company data file</span>
+        <InputFile class="text-input"
+                   accept=".csv,.zip,.xls,.xlsx,.xlsm"
+                   OnChange="ImportFileAsync"
+                   disabled="@_isImporting" />
+    </label>
+
+    @if (_isImporting)
+    {
+        <p class="search-summary">Importing @_currentFileName...</p>
+    }
+</section>
+
+@if (!string.IsNullOrWhiteSpace(_errorMessage))
+{
+    <p class="error-message">@_errorMessage</p>
+}
+
+@if (_lastImportResult is not null)
+{
+    <section class="scrape-result">
+        <h2>Import complete</h2>
+        <p>@_lastImportResult.SourceFileName</p>
+        <ul>
+            <li>Total rows: @_lastImportResult.TotalRows.ToString("N0")</li>
+            <li>Inserted: @_lastImportResult.InsertedRows.ToString("N0")</li>
+            <li>Updated: @_lastImportResult.UpdatedRows.ToString("N0")</li>
+            <li>Skipped: @_lastImportResult.SkippedRows.ToString("N0")</li>
+        </ul>
+    </section>
+}
+
+@code {
+    private const long MaxUploadBytes = 5L * 1024L * 1024L * 1024L;
+
+    private CompanyImportResult? _lastImportResult;
+    private string? _currentFileName;
+    private string? _errorMessage;
+    private bool _isImporting;
+
+    private async Task ImportFileAsync(InputFileChangeEventArgs args)
+    {
+        var file = args.File;
+        _isImporting = true;
+        _lastImportResult = null;
+        _errorMessage = null;
+        _currentFileName = file.Name;
+
+        try
+        {
+            await using var stream = file.OpenReadStream(MaxUploadBytes);
+            _lastImportResult = await CompanyImportService.ImportAsync(stream, file.Name);
+        }
+        catch (Exception ex)
+        {
+            _errorMessage = $"Unable to import company data: {ex.Message}";
+        }
+        finally
+        {
+            _isImporting = false;
+            _currentFileName = null;
+        }
+    }
+}

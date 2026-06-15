@@ -66,6 +66,7 @@
     <Build Include="dbo\FullTextCatalogs\PlanningSearchCatalog.sql" />
     <Build Include="dbo\FullTextIndexes\PlanningApplicationFullTextIndex.sql" />
     <Build Include="dbo\FullTextIndexes\PlanningDocumentFullTextIndex.sql" />
+    <Build Include="dbo\Tables\Company.sql" />
     <Build Include="dbo\Tables\PlanningApplication.sql" />
     <Build Include="dbo\Tables\PlanningAuthority.sql" />
     <Build Include="dbo\Tables\PlanningDocument.sql" />

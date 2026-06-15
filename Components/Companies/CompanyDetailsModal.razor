@@ -1,0 +1,113 @@
+@using PortalScraper.Data
+
+<div class="modal-backdrop" @onclick="CloseAsync">
+    <section class="modal-panel documents-modal" role="dialog" aria-modal="true" aria-labelledby="company-modal-title" @onclick:stopPropagation="true">
+        <header class="modal-header">
+            <div>
+                <p class="planning-authority">@Display(Company.CompanyNumber)</p>
+                <h2 id="company-modal-title">@Display(Company.CompanyName)</h2>
+                <p class="modal-subtitle">@Display(Company.CompanyStatus)</p>
+            </div>
+            <button class="secondary-button" type="button" @onclick="CloseAsync">Close</button>
+        </header>
+
+        <dl class="modal-details">
+            @foreach (var field in GetFields())
+            {
+                <div @key="field.Label">
+                    <dt>@field.Label</dt>
+                    <dd>@Display(field.Value)</dd>
+                </div>
+            }
+        </dl>
+
+        @if (!string.IsNullOrWhiteSpace(Company.Uri))
+        {
+            <div class="modal-links">
+                <a href="@Company.Uri" target="_blank" rel="noopener noreferrer">Open source URI</a>
+            </div>
+        }
+    </section>
+</div>
+
+@code {
+    [Parameter]
+    public Company Company { get; set; } = null!;
+
+    [Parameter]
+    public EventCallback OnClose { get; set; }
+
+    private Task CloseAsync()
+    {
+        return OnClose.InvokeAsync();
+    }
+
+    private IReadOnlyList<CompanyField> GetFields()
+    {
+        return
+        [
+            new("Email", Company.Email),
+            new("Phone number", Company.PhoneNumber),
+            new("Care of", Company.RegAddressCareOf),
+            new("PO box", Company.RegAddressPoBox),
+            new("Address line 1", Company.RegAddressAddressLine1),
+            new("Address line 2", Company.RegAddressAddressLine2),
+            new("Post town", Company.RegAddressPostTown),
+            new("County", Company.RegAddressCounty),
+            new("Country", Company.RegAddressCountry),
+            new("Postcode", Company.RegAddressPostCode),
+            new("Company category", Company.CompanyCategory),
+            new("Company status", Company.CompanyStatus),
+            new("Country of origin", Company.CountryOfOrigin),
+            new("Dissolution date", Company.DissolutionDate),
+            new("Incorporation date", Company.IncorporationDate),
+            new("Accounts ref day", Company.AccountsAccountRefDay),
+            new("Accounts ref month", Company.AccountsAccountRefMonth),
+            new("Accounts next due date", Company.AccountsNextDueDate),
+            new("Accounts last made up date", Company.AccountsLastMadeUpDate),
+            new("Accounts category", Company.AccountsAccountCategory),
+            new("Returns next due date", Company.ReturnsNextDueDate),
+            new("Returns last made up date", Company.ReturnsLastMadeUpDate),
+            new("Mortgage charges", Company.MortgagesNumMortCharges),
+            new("Mortgage charges outstanding", Company.MortgagesNumMortOutstanding),
+            new("Mortgage charges part satisfied", Company.MortgagesNumMortPartSatisfied),
+            new("Mortgage charges satisfied", Company.MortgagesNumMortSatisfied),
+            new("SIC code 1", Company.SicCodeSicText1),
+            new("SIC code 2", Company.SicCodeSicText2),
+            new("SIC code 3", Company.SicCodeSicText3),
+            new("SIC code 4", Company.SicCodeSicText4),
+            new("General partners", Company.LimitedPartnershipsNumGenPartners),
+            new("Limited partners", Company.LimitedPartnershipsNumLimPartners),
+            new("Previous name 1 date", Company.PreviousName1ConDate),
+            new("Previous name 1", Company.PreviousName1CompanyName),
+            new("Previous name 2 date", Company.PreviousName2ConDate),
+            new("Previous name 2", Company.PreviousName2CompanyName),
+            new("Previous name 3 date", Company.PreviousName3ConDate),
+            new("Previous name 3", Company.PreviousName3CompanyName),
+            new("Previous name 4 date", Company.PreviousName4ConDate),
+            new("Previous name 4", Company.PreviousName4CompanyName),
+            new("Previous name 5 date", Company.PreviousName5ConDate),
+            new("Previous name 5", Company.PreviousName5CompanyName),
+            new("Previous name 6 date", Company.PreviousName6ConDate),
+            new("Previous name 6", Company.PreviousName6CompanyName),
+            new("Previous name 7 date", Company.PreviousName7ConDate),
+            new("Previous name 7", Company.PreviousName7CompanyName),
+            new("Previous name 8 date", Company.PreviousName8ConDate),
+            new("Previous name 8", Company.PreviousName8CompanyName),
+            new("Previous name 9 date", Company.PreviousName9ConDate),
+            new("Previous name 9", Company.PreviousName9CompanyName),
+            new("Previous name 10 date", Company.PreviousName10ConDate),
+            new("Previous name 10", Company.PreviousName10CompanyName),
+            new("Confirmation statement next due date", Company.ConfStmtNextDueDate),
+            new("Confirmation statement last made up date", Company.ConfStmtLastMadeUpDate),
+            new("Imported at", Company.ImportedAtUtc.ToLocalTime().ToString("g"))
+        ];
+    }
+
+    private static string Display(string? value)
+    {
+        return string.IsNullOrWhiteSpace(value) ? "Not recorded" : value;
+    }
+
+    private sealed record CompanyField(string Label, string? Value);
+}

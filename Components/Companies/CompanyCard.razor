@@ -1,0 +1,87 @@
+@using PortalScraper.Data
+
+<article class="planning-card application-summary-card"
+         role="button"
+         tabindex="0"
+         @onclick="OpenAsync"
+         @onkeydown="HandleKeyDownAsync">
+    <header>
+        <div>
+            <p class="planning-authority">@Display(Company.CompanyNumber)</p>
+            <h2>@Display(Company.CompanyName)</h2>
+        </div>
+        @if (!string.IsNullOrWhiteSpace(Company.CompanyStatus))
+        {
+            <span class="status-pill">@Company.CompanyStatus</span>
+        }
+    </header>
+
+    <dl class="planning-details">
+        <div>
+            <dt>Category</dt>
+            <dd>@Display(Company.CompanyCategory)</dd>
+        </div>
+        <div>
+            <dt>Incorporated</dt>
+            <dd>@Display(Company.IncorporationDate)</dd>
+        </div>
+        <div>
+            <dt>Address</dt>
+            <dd>@Display(Address)</dd>
+        </div>
+        <div>
+            <dt>SIC codes</dt>
+            <dd>@Display(SicCodes)</dd>
+        </div>
+        <div>
+            <dt>Email</dt>
+            <dd>@Display(Company.Email)</dd>
+        </div>
+        <div>
+            <dt>Phone</dt>
+            <dd>@Display(Company.PhoneNumber)</dd>
+        </div>
+    </dl>
+</article>
+
+@code {
+    [Parameter]
+    public Company Company { get; set; } = null!;
+
+    [Parameter]
+    public EventCallback<Guid> OnOpen { get; set; }
+
+    private string Address => string.Join(", ", new[]
+    {
+        Company.RegAddressAddressLine1,
+        Company.RegAddressAddressLine2,
+        Company.RegAddressPostTown,
+        Company.RegAddressCounty,
+        Company.RegAddressPostCode
+    }.Where(value => !string.IsNullOrWhiteSpace(value)));
+
+    private string SicCodes => string.Join("; ", new[]
+    {
+        Company.SicCodeSicText1,
+        Company.SicCodeSicText2,
+        Company.SicCodeSicText3,
+        Company.SicCodeSicText4
+    }.Where(value => !string.IsNullOrWhiteSpace(value)));
+
+    private Task OpenAsync()
+    {
+        return OnOpen.InvokeAsync(Company.Id);
+    }
+
+    private Task HandleKeyDownAsync(KeyboardEventArgs args)
+    {
+        return args.Key is "Enter" or " " or "Spacebar"
+            ? OpenAsync()
+            : Task.CompletedTask;
+    }
+
+    private static string Display(string? value)
+    {
+        return string.IsNullOrWhiteSpace(value) ? "Not recorded" : value;
+    }
+}

@@ -2,6 +2,7 @@ using Microsoft.EntityFrameworkCore;
 using PortalScraper.Components;
 using PortalScraper.Data;
 using PortalScraper.Services;
+using PortalScraper.Services.Companies;
 using PortalScraper.Services.Documents;
 using PortalScraper.Services.Export;
 using PortalScraper.Services.Geocoding;
@@ -30,6 +31,9 @@ builder.Services.AddScoped<IPlanningAuthorityLocationService, PlanningAuthorityL
 builder.Services.AddScoped<IRelevantPlanningDocumentService, RelevantPlanningDocumentService>();
 builder.Services.AddScoped<IPlanningApplicationExcelExportService, PlanningApplicationExcelExportService>();
 builder.Services.AddScoped<IPlanningDocumentContentService, PlanningDocumentContentService>();
+builder.Services.AddScoped<ICompanyDataService, CompanyDataService>();
+builder.Services.AddScoped<ICompanyImportService, CompanyImportService>();
+builder.Services.AddScoped<ICompanyExcelExportService, CompanyExcelExportService>();
 builder.Services.AddHttpClient<IGoogleGeocodingService, GoogleGeocodingService>(client =>
 {
     client.BaseAddress = new Uri("https://maps.googleapis.com/");

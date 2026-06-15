@@ -191,10 +191,14 @@ code {
 .secondary-button,
 .danger-button,
 .icon-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     width: fit-content;
     border: 0;
     border-radius: 999px;
     padding: 0.7rem 1rem;
+    text-decoration: none;
     font: inherit;
     font-weight: 600;
     cursor: pointer;
@@ -338,6 +342,28 @@ code {
 .planning-search-form {
     display: grid;
     gap: 0.55rem;
+}
+
+.company-search-form {
+    display: grid;
+    grid-template-columns: minmax(14rem, 1fr) minmax(18rem, 1.4fr);
+    gap: 0.85rem;
+    align-items: end;
+}
+
+.company-search-form label,
+.company-file-picker {
+    display: grid;
+    gap: 0.35rem;
+    min-width: 0;
+}
+
+.company-search-form .planning-search-actions {
+    grid-column: 1 / -1;
+}
+
+.company-upload-panel {
+    max-width: 42rem;
 }
 
 .planning-search-criteria {
@@ -1180,6 +1206,7 @@ code {
 
     .planning-location-fields,
     .authority-geocache-row,
+    .company-search-form,
     .filter-choice-grid,
     .date-picker-button-grid {
         grid-template-columns: 1fr;
