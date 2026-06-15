@@ -80,6 +80,7 @@ else
                              Summary="@ApplicationPaginationSummary"
                              CurrentPage="@_applicationPage"
                              TotalPages="@ApplicationTotalPages"
+                             HasNextPage="@_hasNextApplicationPage"
                              IsLoading="@_isLoading"
                              OnPrevious="PreviousApplicationPageAsync"
                              OnNext="NextApplicationPageAsync"
@@ -123,8 +124,8 @@ else
     private PlanningLocationFilterInput _locationFilter = new();
     private WeeklyScrapeResult? _lastResult;
     private int _applicationPage = 1;
-    private int _applicationTotalCount;
-    private int _documentTotalCount;
+    private int? _applicationTotalCount;
+    private int? _documentTotalCount;
     private int _searchPage = 1;
     private int _searchTotalCount;
     private bool _isLoading = true;
@@ -140,15 +141,25 @@ else
     private bool _isSearchSettingsModalOpen;
     private bool _isExportColumnsModalOpen;
     private bool _isExporting;
+    private bool _hasNextApplicationPage;
+    private bool _hasLoadedPlanningCounts;
     private PlanningApplication? _selectedApplication;
     private PlanningSearchCriterionInput? _selectedSearchCriterion;
     private string? _errorMessage;
     private string? _locationErrorMessage;
     private string? _lastSearchText;
 
-    private int ApplicationTotalPages => PlanningPagination.GetTotalPages(_applicationTotalCount, ApplicationPageSize);
+    private int? ApplicationTotalPages => _applicationTotalCount.HasValue
+        ? PlanningPagination.GetTotalPages(_applicationTotalCount.Value, ApplicationPageSize)
+        : null;
     private int SearchTotalPages => PlanningPagination.GetTotalPages(_searchTotalCount, SearchPageSize);
-    private string ApplicationPaginationSummary => PlanningPagination.GetSummary(_applicationTotalCount, _applicationPage, ApplicationPageSize, "application");
+    private string ApplicationPaginationSummary => PlanningPagination.GetSummary(
+        _applicationTotalCount,
+        _applicationPage,
+        ApplicationPageSize,
+        _applications.Count,
+        _hasNextApplicationPage,
+        "application");
     private string SearchPaginationSummary => PlanningPagination.GetSummary(_searchTotalCount, _searchPage, SearchPageSize, "planning application");
     private IReadOnlyList<PlanningApplicationExportColumn> ExportColumns => ExcelExportService.GetAvailableColumns();
     private bool CanExportSearchResults => _searchHasRun
@@ -161,6 +172,17 @@ else
     protected override async Task OnInitializedAsync()
     {
         await RefreshAsync();
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender || _hasLoadedPlanningCounts)
+        {
+            return;
+        }
+
+        _hasLoadedPlanningCounts = true;
+        await LoadPlanningCountsAsync();
     }
 
     private async Task ScrapeWeeklyAsync()
@@ -198,7 +220,11 @@ else
         {
             _lastResult = await scrape();
             _applicationPage = 1;
+            _applicationTotalCount = null;
+            _documentTotalCount = null;
             await RefreshAsync();
+            await InvokeAsync(StateHasChanged);
+            await LoadPlanningCountsAsync();
         }
         catch (Exception ex)
         {
@@ -223,8 +249,9 @@ else
             _authorities = overview.Authorities.ToList();
             _applications = overview.Applications.ToList();
             _applicationPage = overview.CurrentPage;
-            _applicationTotalCount = overview.ApplicationTotalCount;
-            _documentTotalCount = overview.DocumentTotalCount;
+            _applicationTotalCount = overview.ApplicationTotalCount ?? _applicationTotalCount;
+            _documentTotalCount = overview.DocumentTotalCount ?? _documentTotalCount;
+            _hasNextApplicationPage = overview.HasNextPage;
         }
         catch (Exception ex)
         {
@@ -234,6 +261,22 @@ else
         {
             _isLoading = false;
         }
+    }
+
+    private async Task LoadPlanningCountsAsync()
+    {
+        try
+        {
+            var counts = await PlanningDataService.GetOverviewCountsAsync();
+            _applicationTotalCount = counts.ApplicationTotalCount;
+            _documentTotalCount = counts.DocumentTotalCount;
+        }
+        catch (Exception ex)
+        {
+            _errorMessage = $"Unable to load planning totals: {ex.Message}";
+        }
+
+        await InvokeAsync(StateHasChanged);
     }
 
     private async Task SearchAsync()
@@ -488,7 +531,7 @@ else
 
     private async Task NextApplicationPageAsync()
     {
-        if (_applicationPage >= ApplicationTotalPages)
+        if (!_hasNextApplicationPage)
         {
             return;
         }

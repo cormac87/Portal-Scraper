@@ -81,7 +81,7 @@
     public IReadOnlyList<CompanyExportColumn> AvailableColumns { get; set; } = [];
 
     [Parameter]
-    public int ResultCount { get; set; }
+    public int? ResultCount { get; set; }
 
     [Parameter]
     public EventCallback<CompanyExportSelection> OnDone { get; set; }
@@ -89,7 +89,12 @@
     [Parameter]
     public EventCallback OnCancel { get; set; }
 
-    private string ResultCountText => ResultCount == 1 ? "1 company" : $"{ResultCount:N0} companies";
+    private string ResultCountText => ResultCount switch
+    {
+        1 => "1 company",
+        > 1 => $"{ResultCount.Value:N0} companies",
+        _ => "Current company results"
+    };
 
     private bool CanSubmit => string.IsNullOrWhiteSpace(ValidationMessage);
 

@@ -14,8 +14,9 @@ public sealed record CompanySearchFilters(
 
 public sealed record CompanySearchPage(
     IReadOnlyList<Company> Companies,
-    int TotalCount,
-    int CurrentPage);
+    int? TotalCount,
+    int CurrentPage,
+    bool HasNextPage);
 
 public sealed record CompanySicCodeOption(
     string Code,

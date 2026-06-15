@@ -4,8 +4,8 @@
         <button class="secondary-button" type="button" @onclick="OnPrevious" disabled="@(IsBusy || CurrentPage <= 1)">
             Previous
         </button>
-        <span>Page @CurrentPage of @TotalPages</span>
-        <button class="secondary-button" type="button" @onclick="OnNext" disabled="@(IsBusy || CurrentPage >= TotalPages)">
+        <span>@PageLabel</span>
+        <button class="secondary-button" type="button" @onclick="OnNext" disabled="@(IsBusy || !CanGoNext)">
             Next
         </button>
     </div>
@@ -19,7 +19,10 @@
     public int CurrentPage { get; set; } = 1;
 
     [Parameter]
-    public int TotalPages { get; set; } = 1;
+    public int? TotalPages { get; set; } = 1;
+
+    [Parameter]
+    public bool? HasNextPage { get; set; }
 
     [Parameter]
     public bool IsBusy { get; set; }
@@ -29,4 +32,10 @@
 
     [Parameter]
     public EventCallback OnNext { get; set; }
+
+    private bool CanGoNext => HasNextPage ?? (TotalPages.HasValue && CurrentPage < TotalPages.Value);
+
+    private string PageLabel => TotalPages.HasValue
+        ? $"Page {CurrentPage} of {TotalPages.Value}"
+        : $"Page {CurrentPage}";
 }

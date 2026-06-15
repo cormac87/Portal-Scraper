@@ -29,4 +29,29 @@ public static class PlanningPagination
 
         return $"Showing {start}-{end} of {totalCount} {itemName}(s)";
     }
+
+    public static string GetSummary(
+        int? totalCount,
+        int currentPage,
+        int pageSize,
+        int loadedCount,
+        bool hasNextPage,
+        string itemName)
+    {
+        if (totalCount.HasValue)
+        {
+            return GetSummary(totalCount.Value, currentPage, pageSize, itemName);
+        }
+
+        if (loadedCount == 0)
+        {
+            return $"0 {itemName}(s)";
+        }
+
+        var start = GetPageSkip(currentPage, pageSize) + 1;
+        var end = start + loadedCount - 1;
+        var suffix = hasNextPage ? " and more" : string.Empty;
+
+        return $"Showing {start}-{end}{suffix} {itemName}(s)";
+    }
 }

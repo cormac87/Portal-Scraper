@@ -44,6 +44,11 @@ internal static class CompanyQuery
             .ThenBy(company => company.Id);
     }
 
+    public static IOrderedQueryable<Company> ApplyPageSort(IQueryable<Company> query)
+    {
+        return query.OrderBy(company => company.Id);
+    }
+
     public static CompanySicCodeOption? ParseSicCodeOption(string? sicText)
     {
         if (string.IsNullOrWhiteSpace(sicText))

@@ -7,11 +7,11 @@
     </article>
     <article class="stat-card">
         <span>Applications</span>
-        <strong>@ApplicationTotalCount</strong>
+        <strong>@FormatCount(ApplicationTotalCount)</strong>
     </article>
     <article class="stat-card">
         <span>Documents</span>
-        <strong>@DocumentTotalCount</strong>
+        <strong>@FormatCount(DocumentTotalCount)</strong>
     </article>
 </section>
 
@@ -20,8 +20,13 @@
     public IReadOnlyList<PlanningAuthority> Authorities { get; set; } = [];
 
     [Parameter]
-    public int ApplicationTotalCount { get; set; }
+    public int? ApplicationTotalCount { get; set; }
 
     [Parameter]
-    public int DocumentTotalCount { get; set; }
+    public int? DocumentTotalCount { get; set; }
+
+    private static string FormatCount(int? count)
+    {
+        return count.HasValue ? count.Value.ToString("N0") : "Loading";
+    }
 }

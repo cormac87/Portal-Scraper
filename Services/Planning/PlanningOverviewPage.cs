@@ -6,5 +6,10 @@ public sealed record PlanningOverviewPage(
     IReadOnlyList<PlanningAuthority> Authorities,
     IReadOnlyList<PlanningApplication> Applications,
     int CurrentPage,
+    int? ApplicationTotalCount,
+    int? DocumentTotalCount,
+    bool HasNextPage);
+
+public sealed record PlanningOverviewCounts(
     int ApplicationTotalCount,
     int DocumentTotalCount);

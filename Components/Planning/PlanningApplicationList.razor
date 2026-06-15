@@ -19,6 +19,7 @@ else
     <PaginationControls Summary="@Summary"
                         CurrentPage="@CurrentPage"
                         TotalPages="@TotalPages"
+                        HasNextPage="@HasNextPage"
                         IsBusy="@IsLoading"
                         OnPrevious="OnPrevious"
                         OnNext="OnNext" />
@@ -38,6 +39,7 @@ else
     <PaginationControls Summary="@Summary"
                         CurrentPage="@CurrentPage"
                         TotalPages="@TotalPages"
+                        HasNextPage="@HasNextPage"
                         IsBusy="@IsLoading"
                         OnPrevious="OnPrevious"
                         OnNext="OnNext" />
@@ -54,7 +56,10 @@ else
     public int CurrentPage { get; set; } = 1;
 
     [Parameter]
-    public int TotalPages { get; set; } = 1;
+    public int? TotalPages { get; set; } = 1;
+
+    [Parameter]
+    public bool? HasNextPage { get; set; }
 
     [Parameter]
     public bool IsLoading { get; set; }

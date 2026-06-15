@@ -6,5 +6,7 @@ public interface IPlanningDataService
 {
     Task<PlanningOverviewPage> GetOverviewPageAsync(int page, int pageSize, CancellationToken cancellationToken = default);
 
+    Task<PlanningOverviewCounts> GetOverviewCountsAsync(CancellationToken cancellationToken = default);
+
     Task<PlanningApplication?> GetApplicationAsync(Guid applicationId, CancellationToken cancellationToken = default);
 }
