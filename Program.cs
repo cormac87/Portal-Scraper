@@ -34,6 +34,7 @@ builder.Services.AddScoped<IPlanningDocumentContentService, PlanningDocumentCont
 builder.Services.AddScoped<ICompanyDataService, CompanyDataService>();
 builder.Services.AddScoped<ICompanyImportService, CompanyImportService>();
 builder.Services.AddScoped<ICompanyExcelExportService, CompanyExcelExportService>();
+builder.Services.AddScoped<ICompanyContactScraperService, CompanyContactScraperService>();
 builder.Services.AddHttpClient<IGoogleGeocodingService, GoogleGeocodingService>(client =>
 {
     client.BaseAddress = new Uri("https://maps.googleapis.com/");

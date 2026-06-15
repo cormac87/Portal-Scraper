@@ -2,6 +2,7 @@
 @using System.IO
 @inject ICompanyDataService CompanyDataService
 @inject ICompanyExcelExportService ExcelExportService
+@inject ICompanyContactScraperService ContactScraperService
 @inject IJSRuntime JS
 
 <PageTitle>Companies</PageTitle>
@@ -13,6 +14,9 @@
     </div>
     <div class="page-header-actions">
         <a class="secondary-button" href="/companies/upload">Upload company data</a>
+        <button class="secondary-button" type="button" @onclick="ScrapeContactsAsync" disabled="@(!CanScrapeContacts)" title="@ScrapeContactsTitle">
+            @ScrapeContactsButtonLabel
+        </button>
         <button class="secondary-button" type="button" @onclick="OpenExportColumnsModal" disabled="@(!CanExportResults)">
             Export Results to Excel
         </button>
@@ -76,6 +80,38 @@
     <p class="error-message">@_errorMessage</p>
 }
 
+@if (_lastContactScrapeResult is not null)
+{
+    <section class="scrape-result">
+        <h2>Contact scrape complete</h2>
+        <p>
+            @PlanningDisplayFormatter.FormatDateTime(_lastContactScrapeResult.StartedAtUtc)
+            to @PlanningDisplayFormatter.FormatDateTime(_lastContactScrapeResult.FinishedAtUtc)
+        </p>
+        <ul>
+            <li>Candidate companies: @_lastContactScrapeResult.CandidateCompanies.ToString("N0")</li>
+            <li>Searched: @_lastContactScrapeResult.SearchedCompanies.ToString("N0")</li>
+            <li>Skipped: @_lastContactScrapeResult.SkippedCompanies.ToString("N0")</li>
+            <li>Emails found: @_lastContactScrapeResult.EmailsFound.ToString("N0")</li>
+            <li>Emails updated: @_lastContactScrapeResult.EmailsUpdated.ToString("N0")</li>
+            <li>Failed: @_lastContactScrapeResult.FailedCompanies.ToString("N0")</li>
+        </ul>
+
+        @if (_lastContactScrapeResult.Messages.Count > 0)
+        {
+            <details class="document-panel">
+                <summary>Messages (@_lastContactScrapeResult.Messages.Count)</summary>
+                <ul>
+                    @foreach (var message in _lastContactScrapeResult.Messages)
+                    {
+                        <li>@message</li>
+                    }
+                </ul>
+            </details>
+        }
+    </section>
+}
+
 @if (_isLoading || _isSearching)
 {
     <section class="empty-state">
@@ -128,6 +164,7 @@ else
     private List<Company> _companies = [];
     private List<CompanySicCodeOption> _sicCodeOptions = [];
     private CompanySearchFilters _lastFilters = CompanySearchFilters.Empty;
+    private CompanyContactScrapeResult? _lastContactScrapeResult;
     private Company? _selectedCompany;
     private string? _companyName;
     private string? _selectedSicCode;
@@ -137,14 +174,20 @@ else
     private bool _isLoading = true;
     private bool _isSearching;
     private bool _isExporting;
+    private bool _isScrapingContacts;
     private bool _isExportColumnsModalOpen;
     private bool _isCompanyModalOpen;
 
     private int CompanyTotalPages => PlanningPagination.GetTotalPages(_companyTotalCount, CompanyPageSize);
     private string PaginationSummary => PlanningPagination.GetSummary(_companyTotalCount, _companyPage, CompanyPageSize, "company");
     private string SearchButtonLabel => _isSearching ? "Searching..." : "Search";
+    private string ScrapeContactsButtonLabel => _isScrapingContacts ? "Scraping Contacts..." : "Scrape Contacts";
+    private string ScrapeContactsTitle => _lastFilters.HasActive
+        ? "Scrape contacts for the current filtered companies"
+        : "Run a company name or SIC search before scraping contacts";
     private IReadOnlyList<CompanyExportColumn> ExportColumns => ExcelExportService.GetAvailableColumns();
-    private bool CanExportResults => !_isLoading && !_isSearching && !_isExporting && _companyTotalCount > 0;
+    private bool CanExportResults => !_isLoading && !_isSearching && !_isExporting && !_isScrapingContacts && _companyTotalCount > 0;
+    private bool CanScrapeContacts => _lastFilters.HasActive && !_isLoading && !_isSearching && !_isExporting && !_isScrapingContacts && _companyTotalCount > 0;
 
     protected override async Task OnInitializedAsync()
     {
@@ -257,6 +300,34 @@ else
     {
         _isCompanyModalOpen = false;
         _selectedCompany = null;
+    }
+
+    private async Task ScrapeContactsAsync()
+    {
+        if (!CanScrapeContacts)
+        {
+            return;
+        }
+
+        _isScrapingContacts = true;
+        _lastContactScrapeResult = null;
+        _errorMessage = null;
+        await InvokeAsync(StateHasChanged);
+
+        try
+        {
+            _lastContactScrapeResult = await ContactScraperService.ScrapeContactsAsync(_lastFilters);
+            await LoadSicCodeOptionsAsync();
+            await LoadCompanyPageAsync();
+        }
+        catch (Exception ex)
+        {
+            _errorMessage = $"Unable to scrape company contacts: {ex.Message}";
+        }
+        finally
+        {
+            _isScrapingContacts = false;
+        }
     }
 
     private void OpenExportColumnsModal()

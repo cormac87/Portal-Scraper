@@ -35,3 +35,14 @@ public sealed record CompanyImportResult(
 {
     public int ImportedRows => InsertedRows + UpdatedRows;
 }
+
+public sealed record CompanyContactScrapeResult(
+    DateTime StartedAtUtc,
+    DateTime FinishedAtUtc,
+    int CandidateCompanies,
+    int SearchedCompanies,
+    int SkippedCompanies,
+    int EmailsFound,
+    int EmailsUpdated,
+    int FailedCompanies,
+    IReadOnlyList<string> Messages);
