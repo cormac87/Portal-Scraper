@@ -56,6 +56,9 @@
             new("County", Company.RegAddressCounty),
             new("Country", Company.RegAddressCountry),
             new("Postcode", Company.RegAddressPostCode),
+            new("Distance", Company.DistanceKm.HasValue ? $"{Company.DistanceKm.Value:0.0} km" : null),
+            new("Coordinates", FormatCoordinate(Company.Latitude, Company.Longitude)),
+            new("Location lookup", Company.LocationLookupStatus),
             new("Company category", Company.CompanyCategory),
             new("Company status", Company.CompanyStatus),
             new("Country of origin", Company.CountryOfOrigin),
@@ -107,6 +110,13 @@
     private static string Display(string? value)
     {
         return string.IsNullOrWhiteSpace(value) ? "Not recorded" : value;
+    }
+
+    private static string? FormatCoordinate(double? latitude, double? longitude)
+    {
+        return latitude is null || longitude is null
+            ? null
+            : $"{latitude.Value:0.000000}, {longitude.Value:0.000000}";
     }
 
     private sealed record CompanyField(string Label, string? Value);

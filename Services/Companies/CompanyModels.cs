@@ -4,12 +4,27 @@ namespace PortalScraper.Services.Companies;
 
 public sealed record CompanySearchFilters(
     string? CompanyName = null,
-    string? SicCode = null)
+    string? SicCode = null,
+    CompanyLocationSearch? Location = null)
 {
     public static CompanySearchFilters Empty { get; } = new();
 
     public bool HasActive => !string.IsNullOrWhiteSpace(CompanyName)
-        || !string.IsNullOrWhiteSpace(SicCode);
+        || !string.IsNullOrWhiteSpace(SicCode)
+        || Location is not null;
+}
+
+public sealed record CompanyLocationSearch(
+    string Postcode,
+    double Latitude,
+    double Longitude,
+    double RadiusKm);
+
+public sealed class CompanyLocationFilterInput
+{
+    public string Postcode { get; set; } = string.Empty;
+
+    public double RadiusKm { get; set; } = 10;
 }
 
 public sealed record CompanySearchPage(
@@ -47,3 +62,30 @@ public sealed record CompanyContactScrapeResult(
     int EmailsUpdated,
     int FailedCompanies,
     IReadOnlyList<string> Messages);
+
+public sealed record CompanyLocationCacheStats(
+    long TotalCompanies,
+    long CompaniesWithLocation,
+    long CompaniesMissingLocationWithPostcode,
+    int DistinctPostcodesPendingLookup);
+
+public sealed record CompanyLocationRefreshResult(
+    DateTime StartedAtUtc,
+    DateTime FinishedAtUtc,
+    int RequestedPostcodes,
+    int AttemptedPostcodes,
+    int UpdatedPostcodes,
+    int NotFoundPostcodes,
+    int FailedPostcodes,
+    int UpdatedCompanies,
+    int NotFoundCompanies,
+    IReadOnlyList<CompanyLocationRefreshItem> Items,
+    CompanyLocationCacheStats Stats);
+
+public sealed record CompanyLocationRefreshItem(
+    string Postcode,
+    long CompanyCount,
+    string Status,
+    double? Latitude,
+    double? Longitude,
+    string? Message);

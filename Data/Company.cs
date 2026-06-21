@@ -1,4 +1,6 @@
 using System.ComponentModel.DataAnnotations;
+using System.ComponentModel.DataAnnotations.Schema;
+using NetTopologySuite.Geometries;
 
 namespace PortalScraper.Data;
 
@@ -42,6 +44,23 @@ public sealed class Company
 
     [StringLength(20)]
     public string? RegAddressPostCode { get; set; }
+
+    [StringLength(20)]
+    public string? NormalizedPostcode { get; private set; }
+
+    public double? Latitude { get; set; }
+
+    public double? Longitude { get; set; }
+
+    public Point? Location { get; set; }
+
+    [StringLength(30)]
+    public string? LocationLookupStatus { get; set; }
+
+    [StringLength(255)]
+    public string? LocationLookupMessage { get; set; }
+
+    public DateTime? LocationLookupAtUtc { get; set; }
 
     [StringLength(255)]
     public string? CompanyCategory { get; set; }
@@ -179,4 +198,7 @@ public sealed class Company
     public string? ConfStmtLastMadeUpDate { get; set; }
 
     public DateTime ImportedAtUtc { get; set; } = DateTime.UtcNow;
+
+    [NotMapped]
+    public double? DistanceKm { get; set; }
 }

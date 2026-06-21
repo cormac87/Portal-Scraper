@@ -23,6 +23,13 @@ BEGIN
         [RegAddressCounty] NVARCHAR(255) NULL,
         [RegAddressCountry] NVARCHAR(255) NULL,
         [RegAddressPostCode] NVARCHAR(20) NULL,
+        [NormalizedPostcode] AS (UPPER(REPLACE([RegAddressPostCode], N' ', N''))) PERSISTED,
+        [Latitude] FLOAT NULL,
+        [Longitude] FLOAT NULL,
+        [Location] GEOGRAPHY NULL,
+        [LocationLookupStatus] NVARCHAR(30) NULL,
+        [LocationLookupMessage] NVARCHAR(255) NULL,
+        [LocationLookupAtUtc] DATETIME2(7) NULL,
         [CompanyCategory] NVARCHAR(255) NULL,
         [CompanyStatus] NVARCHAR(100) NULL,
         [CountryOfOrigin] NVARCHAR(100) NULL,
@@ -142,6 +149,87 @@ BEGIN
     CREATE NONCLUSTERED INDEX [IX_Company_SicCodeSicText4]
         ON [dbo].[Company] ([SicCodeSicText4])
         WHERE [SicCodeSicText4] IS NOT NULL;
+END;
+
+IF COL_LENGTH('dbo.Company', 'NormalizedPostcode') IS NULL
+BEGIN
+    ALTER TABLE [dbo].[Company]
+        ADD [NormalizedPostcode] AS (UPPER(REPLACE([RegAddressPostCode], N' ', N''))) PERSISTED;
+END;
+
+IF COL_LENGTH('dbo.Company', 'Latitude') IS NULL
+BEGIN
+    ALTER TABLE [dbo].[Company]
+        ADD [Latitude] FLOAT NULL;
+END;
+
+IF COL_LENGTH('dbo.Company', 'Longitude') IS NULL
+BEGIN
+    ALTER TABLE [dbo].[Company]
+        ADD [Longitude] FLOAT NULL;
+END;
+
+IF COL_LENGTH('dbo.Company', 'Location') IS NULL
+BEGIN
+    ALTER TABLE [dbo].[Company]
+        ADD [Location] GEOGRAPHY NULL;
+END;
+
+IF COL_LENGTH('dbo.Company', 'LocationLookupStatus') IS NULL
+BEGIN
+    ALTER TABLE [dbo].[Company]
+        ADD [LocationLookupStatus] NVARCHAR(30) NULL;
+END;
+
+IF COL_LENGTH('dbo.Company', 'LocationLookupMessage') IS NULL
+BEGIN
+    ALTER TABLE [dbo].[Company]
+        ADD [LocationLookupMessage] NVARCHAR(255) NULL;
+END;
+
+IF COL_LENGTH('dbo.Company', 'LocationLookupAtUtc') IS NULL
+BEGIN
+    ALTER TABLE [dbo].[Company]
+        ADD [LocationLookupAtUtc] DATETIME2(7) NULL;
+END;
+
+GO
+
+IF NOT EXISTS (
+    SELECT 1
+    FROM sys.indexes
+    WHERE name = 'IX_Company_NormalizedPostcode'
+        AND object_id = OBJECT_ID('dbo.Company')
+)
+BEGIN
+    CREATE NONCLUSTERED INDEX [IX_Company_NormalizedPostcode]
+        ON [dbo].[Company] ([NormalizedPostcode]);
+END;
+
+IF NOT EXISTS (
+    SELECT 1
+    FROM sys.indexes
+    WHERE name = 'IX_Company_Latitude_Longitude'
+        AND object_id = OBJECT_ID('dbo.Company')
+)
+BEGIN
+    CREATE NONCLUSTERED INDEX [IX_Company_Latitude_Longitude]
+        ON [dbo].[Company] ([Latitude], [Longitude])
+        WHERE [Latitude] IS NOT NULL
+            AND [Longitude] IS NOT NULL;
+END;
+
+IF NOT EXISTS (
+    SELECT 1
+    FROM sys.indexes
+    WHERE name = 'SIX_Company_Location'
+        AND object_id = OBJECT_ID('dbo.Company')
+)
+BEGIN
+    CREATE SPATIAL INDEX [SIX_Company_Location]
+        ON [dbo].[Company] ([Location])
+        USING GEOGRAPHY_AUTO_GRID
+        WITH (CELLS_PER_OBJECT = 16);
 END;
 
 IF COL_LENGTH('dbo.PlanningApplication', 'ReceivedDate') IS NULL

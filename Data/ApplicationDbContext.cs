@@ -191,6 +191,19 @@ public sealed class ApplicationDbContext(DbContextOptions<ApplicationDbContext> 
             entity.Property(item => item.PhoneNumber)
                 .HasMaxLength(50);
 
+            entity.Property(item => item.NormalizedPostcode)
+                .HasMaxLength(20)
+                .HasComputedColumnSql("UPPER(REPLACE([RegAddressPostCode], N' ', N''))", stored: true);
+
+            entity.Property(item => item.Location)
+                .HasColumnType("geography");
+
+            entity.Property(item => item.LocationLookupStatus)
+                .HasMaxLength(30);
+
+            entity.Property(item => item.LocationLookupMessage)
+                .HasMaxLength(255);
+
             entity.Property(item => item.ImportedAtUtc)
                 .HasDefaultValueSql("SYSUTCDATETIME()");
 
@@ -217,6 +230,13 @@ public sealed class ApplicationDbContext(DbContextOptions<ApplicationDbContext> 
             entity.HasIndex(item => item.SicCodeSicText4)
                 .HasDatabaseName("IX_Company_SicCodeSicText4")
                 .HasFilter("[SicCodeSicText4] IS NOT NULL");
+
+            entity.HasIndex(item => item.NormalizedPostcode)
+                .HasDatabaseName("IX_Company_NormalizedPostcode");
+
+            entity.HasIndex(item => new { item.Latitude, item.Longitude })
+                .HasDatabaseName("IX_Company_Latitude_Longitude")
+                .HasFilter("[Latitude] IS NOT NULL AND [Longitude] IS NOT NULL");
         });
     }
 }

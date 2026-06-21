@@ -33,7 +33,8 @@ public sealed class CompanyDataService(IDbContextFactory<ApplicationDbContext> d
         var normalizedPageSize = Math.Max(1, pageSize);
         var currentPage = Math.Max(1, page);
         var query = CompanyQuery.ApplyFilters(db.Companies.AsNoTracking(), filters);
-        var companies = await CompanyQuery.ApplyPageSort(query)
+        var origin = filters.Location is null ? null : CompanyQuery.CreatePoint(filters.Location);
+        var companies = await CompanyQuery.ApplyPageSort(query, filters)
             .Skip(PlanningPagination.GetPageSkip(currentPage, normalizedPageSize))
             .Take(normalizedPageSize + 1)
             .Select(company => new Company
@@ -48,13 +49,19 @@ public sealed class CompanyDataService(IDbContextFactory<ApplicationDbContext> d
                 RegAddressPostTown = company.RegAddressPostTown,
                 RegAddressCounty = company.RegAddressCounty,
                 RegAddressPostCode = company.RegAddressPostCode,
+                Latitude = company.Latitude,
+                Longitude = company.Longitude,
+                LocationLookupStatus = company.LocationLookupStatus,
                 CompanyCategory = company.CompanyCategory,
                 CompanyStatus = company.CompanyStatus,
                 IncorporationDate = company.IncorporationDate,
                 SicCodeSicText1 = company.SicCodeSicText1,
                 SicCodeSicText2 = company.SicCodeSicText2,
                 SicCodeSicText3 = company.SicCodeSicText3,
-                SicCodeSicText4 = company.SicCodeSicText4
+                SicCodeSicText4 = company.SicCodeSicText4,
+                DistanceKm = origin == null || company.Location == null
+                    ? null
+                    : company.Location.Distance(origin) / 1000d
             })
             .ToListAsync(cancellationToken);
         var hasNextPage = companies.Count > normalizedPageSize;

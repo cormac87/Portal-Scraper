@@ -115,7 +115,8 @@ public sealed class CompanyContactScraperService(
                 .Where(company =>
                     company.CompanyName != null
                     && company.CompanyName != string.Empty
-                    && (company.Email == null || company.Email == string.Empty)))
+                    && (company.Email == null || company.Email == string.Empty)),
+                filters)
             .Select(company => new CompanyContactCandidate(
                 company.Id,
                 company.CompanyNumber,

@@ -104,7 +104,8 @@ public sealed class CompanyExcelExportService(
         await using var db = await dbFactory.CreateDbContextAsync(cancellationToken);
         var query = CompanyQuery.ApplyDefaultSort(CompanyQuery.ApplyFilters(
             db.Companies.AsNoTracking(),
-            request.Filters));
+            request.Filters),
+            request.Filters);
 
         var totalCount = await query.CountAsync(cancellationToken);
         if (totalCount > ExcelMaxDataRows)

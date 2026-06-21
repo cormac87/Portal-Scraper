@@ -17,6 +17,13 @@
     </header>
 
     <dl class="planning-details">
+        @if (Company.DistanceKm.HasValue)
+        {
+            <div>
+                <dt>Distance</dt>
+                <dd>@Company.DistanceKm.Value.ToString("0.0") km</dd>
+            </div>
+        }
         <div>
             <dt>Category</dt>
             <dd>@Display(Company.CompanyCategory)</dd>

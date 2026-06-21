@@ -1,5 +1,6 @@
 using System.Globalization;
 using Microsoft.EntityFrameworkCore;
+using NetTopologySuite.Geometries;
 using PortalScraper.Data;
 
 namespace PortalScraper.Services.Companies;
@@ -33,20 +34,59 @@ internal static class CompanyQuery
                 || (company.SicCodeSicText4 != null && EF.Functions.Like(company.SicCodeSicText4, sicPattern)));
         }
 
+        if (filters.Location is not null)
+        {
+            var origin = CreatePoint(filters.Location);
+            var radiusMeters = filters.Location.RadiusKm * 1000d;
+            query = query.Where(company =>
+                company.Location != null
+                && company.Location.Distance(origin) <= radiusMeters);
+        }
+
         return query;
     }
 
-    public static IOrderedQueryable<Company> ApplyDefaultSort(IQueryable<Company> query)
+    public static IOrderedQueryable<Company> ApplyDefaultSort(
+        IQueryable<Company> query,
+        CompanySearchFilters? filters = null)
     {
+        if (filters?.Location is not null)
+        {
+            var origin = CreatePoint(filters.Location);
+            return query
+                .OrderBy(company => company.Location!.Distance(origin))
+                .ThenBy(company => company.CompanyName)
+                .ThenBy(company => company.CompanyNumber)
+                .ThenBy(company => company.Id);
+        }
+
         return query
             .OrderBy(company => company.CompanyName)
             .ThenBy(company => company.CompanyNumber)
             .ThenBy(company => company.Id);
     }
 
-    public static IOrderedQueryable<Company> ApplyPageSort(IQueryable<Company> query)
+    public static IOrderedQueryable<Company> ApplyPageSort(
+        IQueryable<Company> query,
+        CompanySearchFilters? filters = null)
     {
+        if (filters?.Location is not null)
+        {
+            var origin = CreatePoint(filters.Location);
+            return query
+                .OrderBy(company => company.Location!.Distance(origin))
+                .ThenBy(company => company.Id);
+        }
+
         return query.OrderBy(company => company.Id);
+    }
+
+    public static Point CreatePoint(CompanyLocationSearch location)
+    {
+        return new Point(location.Longitude, location.Latitude)
+        {
+            SRID = 4326
+        };
     }
 
     public static CompanySicCodeOption? ParseSicCodeOption(string? sicText)

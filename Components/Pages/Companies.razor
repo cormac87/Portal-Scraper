@@ -1,9 +1,11 @@
 @page "/companies"
 @implements IDisposable
+@using System.Globalization
 @using System.IO
 @inject ICompanyDataService CompanyDataService
 @inject ICompanyExcelExportService ExcelExportService
 @inject ICompanyContactScraperService ContactScraperService
+@inject IPostcodeGeocodingService PostcodeGeocodingService
 @inject IJSRuntime JS
 
 <PageTitle>Companies</PageTitle>
@@ -15,6 +17,7 @@
     </div>
     <div class="page-header-actions">
         <a class="secondary-button" href="/companies/upload">Upload company data</a>
+        <a class="secondary-button" href="/companies/locations">Company locations</a>
         <button class="secondary-button" type="button" @onclick="ScrapeContactsAsync" disabled="@(!CanScrapeContacts)" title="@ScrapeContactsTitle">
             @ScrapeContactsButtonLabel
         </button>
@@ -63,17 +66,51 @@
             </datalist>
         </label>
 
+        <label>
+            <span class="field-label">Postcode</span>
+            <input class="text-input"
+                   value="@_locationFilter.Postcode"
+                   @oninput="OnLocationPostcodeInput"
+                   placeholder="SW1A 1AA"
+                   autocomplete="postal-code" />
+        </label>
+
+        <label>
+            <span class="field-label">Distance km</span>
+            <input class="text-input"
+                   type="number"
+                   min="1"
+                   step="1"
+                   value="@_locationFilter.RadiusKm"
+                   @oninput="OnLocationRadiusInput" />
+        </label>
+
         <div class="planning-search-actions">
-            <button class="primary-button" type="submit" disabled="@_isSearching">
+            <button class="primary-button" type="submit" disabled="@(_isSearching || _isResolvingLocation)">
                 @SearchButtonLabel
             </button>
-            <button class="secondary-button" type="button" @onclick="ClearSearchAsync" disabled="@_isSearching">
+            <button class="secondary-button" type="button" @onclick="ClearSearchAsync" disabled="@(_isSearching || _isResolvingLocation)">
                 Clear
             </button>
+            @if (_lastFilters.Location is not null)
+            {
+                <button class="secondary-button" type="button" @onclick="ClearLocationAsync" disabled="@(_isSearching || _isResolvingLocation)">
+                    Clear location
+                </button>
+            }
             <p class="search-summary">@PaginationSummary</p>
+            @if (_lastFilters.Location is not null)
+            {
+                <p class="search-summary">@LocationSearchSummary</p>
+            }
         </div>
     </form>
 </section>
+
+@if (!string.IsNullOrWhiteSpace(_locationErrorMessage))
+{
+    <p class="error-message">@_locationErrorMessage</p>
+}
 
 @if (_isExportColumnsModalOpen)
 {
@@ -176,10 +213,13 @@ else
     private CompanySearchFilters _lastFilters = CompanySearchFilters.Empty;
     private CompanyContactScrapeResult? _lastContactScrapeResult;
     private Company? _selectedCompany;
+    private CompanyLocationFilterInput _locationFilter = new();
+    private CompanyLocationSearch? _resolvedLocationSearch;
     private string? _companyName;
     private string? _selectedSicCode;
     private string? _sicCodeSearchText;
     private string? _errorMessage;
+    private string? _locationErrorMessage;
     private int _companyPage = 1;
     private int? _companyTotalCount;
     private int? _companyResultCount;
@@ -190,6 +230,7 @@ else
     private bool _isSearching;
     private bool _isExporting;
     private bool _isScrapingContacts;
+    private bool _isResolvingLocation;
     private bool _isLoadingSicCodes = true;
     private bool _isLoadingCompanyResultCount;
     private bool _hasNextCompanyPage;
@@ -212,14 +253,19 @@ else
     private string SicCodePlaceholder => _isLoadingSicCodes
         ? "Loading SIC codes"
         : "All SIC codes";
-    private string SearchButtonLabel => _isSearching ? "Searching..." : "Search";
+    private string SearchButtonLabel => _isResolvingLocation
+        ? "Finding location..."
+        : _isSearching ? "Searching..." : "Search";
     private string ScrapeContactsButtonLabel => _isScrapingContacts ? "Scraping Contacts..." : "Scrape Contacts";
     private string ScrapeContactsTitle => _lastFilters.HasActive
         ? "Scrape contacts for the current filtered companies"
         : "Run a company name or SIC search before scraping contacts";
     private IReadOnlyList<CompanyExportColumn> ExportColumns => ExcelExportService.GetAvailableColumns();
-    private bool CanExportResults => !_isLoading && !_isSearching && !_isExporting && !_isScrapingContacts && _companies.Count > 0;
-    private bool CanScrapeContacts => _lastFilters.HasActive && !_isLoading && !_isSearching && !_isExporting && !_isScrapingContacts && _companies.Count > 0;
+    private string LocationSearchSummary => _lastFilters.Location is null
+        ? string.Empty
+        : $"Within {_lastFilters.Location.RadiusKm:0.#} km of {_lastFilters.Location.Postcode}";
+    private bool CanExportResults => !_isLoading && !_isSearching && !_isResolvingLocation && !_isExporting && !_isScrapingContacts && _companies.Count > 0;
+    private bool CanScrapeContacts => _lastFilters.HasActive && !_isLoading && !_isSearching && !_isResolvingLocation && !_isExporting && !_isScrapingContacts && _companies.Count > 0;
 
     protected override async Task OnInitializedAsync()
     {
@@ -313,10 +359,16 @@ else
     private async Task SearchAsync()
     {
         ResolveSicCodeSelection();
+        var locationResolution = await ResolveLocationSearchAsync();
+        if (!locationResolution.Success)
+        {
+            return;
+        }
+
         _companyPage = 1;
         _companyResultCount = null;
         _companyResultCountFilters = null;
-        _lastFilters = new CompanySearchFilters(_companyName, _selectedSicCode);
+        _lastFilters = new CompanySearchFilters(_companyName, _selectedSicCode, locationResolution.Location);
         await LoadCompanyPageAsync();
     }
 
@@ -324,10 +376,32 @@ else
     {
         _companyName = null;
         ClearSicCodeSelection();
+        _locationFilter = new CompanyLocationFilterInput();
+        _resolvedLocationSearch = null;
+        _locationErrorMessage = null;
         _companyPage = 1;
         _companyResultCount = _companyTotalCount;
         _companyResultCountFilters = _companyTotalCount.HasValue ? CompanySearchFilters.Empty : null;
         _lastFilters = CompanySearchFilters.Empty;
+        await LoadCompanyPageAsync();
+    }
+
+    private async Task ClearLocationAsync()
+    {
+        _locationFilter = new CompanyLocationFilterInput();
+        _resolvedLocationSearch = null;
+        _locationErrorMessage = null;
+
+        if (_lastFilters.Location is null)
+        {
+            return;
+        }
+
+        ResolveSicCodeSelection();
+        _companyPage = 1;
+        _companyResultCount = null;
+        _companyResultCountFilters = null;
+        _lastFilters = new CompanySearchFilters(_companyName, _selectedSicCode);
         await LoadCompanyPageAsync();
     }
 
@@ -492,6 +566,7 @@ else
 
         try
         {
+            var listedCompany = _companies.FirstOrDefault(company => company.Id == companyId);
             _selectedCompany = await CompanyDataService.GetCompanyAsync(companyId);
 
             if (_selectedCompany is null)
@@ -501,6 +576,7 @@ else
                 return;
             }
 
+            _selectedCompany.DistanceKm = listedCompany?.DistanceKm;
             _isCompanyModalOpen = true;
         }
         catch (Exception ex)
@@ -599,6 +675,89 @@ else
         _selectedSicCode = FindSicCodeOption(_sicCodeSearchText)?.Code;
     }
 
+    private void OnLocationPostcodeInput(ChangeEventArgs args)
+    {
+        _locationFilter.Postcode = args.Value?.ToString() ?? string.Empty;
+        if (!IsResolvedLocationCurrent())
+        {
+            _resolvedLocationSearch = null;
+        }
+    }
+
+    private void OnLocationRadiusInput(ChangeEventArgs args)
+    {
+        if (double.TryParse(
+            args.Value?.ToString(),
+            NumberStyles.Float,
+            CultureInfo.CurrentCulture,
+            out var radiusKm))
+        {
+            _locationFilter.RadiusKm = radiusKm;
+        }
+
+        if (!IsResolvedLocationCurrent())
+        {
+            _resolvedLocationSearch = null;
+        }
+    }
+
+    private async Task<LocationResolution> ResolveLocationSearchAsync()
+    {
+        _locationErrorMessage = null;
+        var postcode = _locationFilter.Postcode.Trim();
+        if (string.IsNullOrWhiteSpace(postcode))
+        {
+            _resolvedLocationSearch = null;
+            return new LocationResolution(true, null);
+        }
+
+        if (_locationFilter.RadiusKm <= 0)
+        {
+            _locationErrorMessage = "Enter a distance greater than 0 km.";
+            return new LocationResolution(false, null);
+        }
+
+        if (IsResolvedLocationCurrent() && _resolvedLocationSearch is not null)
+        {
+            return new LocationResolution(true, _resolvedLocationSearch);
+        }
+
+        _isResolvingLocation = true;
+        await InvokeAsync(StateHasChanged);
+
+        try
+        {
+            var coordinate = await PostcodeGeocodingService.GeocodePostcodeAsync(postcode);
+            _resolvedLocationSearch = new CompanyLocationSearch(
+                postcode,
+                coordinate.Latitude,
+                coordinate.Longitude,
+                _locationFilter.RadiusKm);
+
+            return new LocationResolution(true, _resolvedLocationSearch);
+        }
+        catch (Exception ex)
+        {
+            _resolvedLocationSearch = null;
+            _locationErrorMessage = $"Unable to find nearby companies: {ex.Message}";
+            return new LocationResolution(false, null);
+        }
+        finally
+        {
+            _isResolvingLocation = false;
+        }
+    }
+
+    private bool IsResolvedLocationCurrent()
+    {
+        return _resolvedLocationSearch is not null
+            && string.Equals(
+                _resolvedLocationSearch.Postcode.Trim(),
+                _locationFilter.Postcode.Trim(),
+                StringComparison.OrdinalIgnoreCase)
+            && Math.Abs(_resolvedLocationSearch.RadiusKm - _locationFilter.RadiusKm) < 0.001;
+    }
+
     private void ResolveSicCodeSelection()
     {
         if (string.IsNullOrWhiteSpace(_sicCodeSearchText))
@@ -662,6 +821,10 @@ else
         _selectedSicCode = null;
         _sicCodeSearchText = null;
     }
+
+    private sealed record LocationResolution(
+        bool Success,
+        CompanyLocationSearch? Location);
 
     public void Dispose()
     {

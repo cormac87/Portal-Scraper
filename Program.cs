@@ -19,7 +19,10 @@ builder.Services.AddRazorComponents()
 
 builder.Services.AddDbContextFactory<ApplicationDbContext>(options =>
     options.UseSqlServer(connectionString, sqlOptions =>
-        sqlOptions.CommandTimeout(1080)));
+    {
+        sqlOptions.CommandTimeout(1080);
+        sqlOptions.UseNetTopologySuite();
+    }));
 builder.Services.Configure<PlanningPortalScraperOptions>(
     builder.Configuration.GetSection(PlanningPortalScraperOptions.SectionName));
 builder.Services.Configure<GoogleMapsGeocodingOptions>(
@@ -32,6 +35,7 @@ builder.Services.AddScoped<IRelevantPlanningDocumentService, RelevantPlanningDoc
 builder.Services.AddScoped<IPlanningApplicationExcelExportService, PlanningApplicationExcelExportService>();
 builder.Services.AddScoped<IPlanningDocumentContentService, PlanningDocumentContentService>();
 builder.Services.AddScoped<ICompanyDataService, CompanyDataService>();
+builder.Services.AddScoped<ICompanyLocationService, CompanyLocationService>();
 builder.Services.AddScoped<ICompanyImportService, CompanyImportService>();
 builder.Services.AddScoped<ICompanyExcelExportService, CompanyExcelExportService>();
 builder.Services.AddScoped<ICompanyContactScraperService, CompanyContactScraperService>();

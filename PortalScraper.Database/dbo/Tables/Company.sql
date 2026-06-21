@@ -59,6 +59,13 @@ CREATE TABLE [dbo].[Company]
     [ConfStmtNextDueDate] NVARCHAR(20) NULL,
     [ConfStmtLastMadeUpDate] NVARCHAR(20) NULL,
     [ImportedAtUtc] DATETIME2(7) NOT NULL CONSTRAINT [DF_Company_ImportedAtUtc] DEFAULT (SYSUTCDATETIME()),
+    [NormalizedPostcode] AS (UPPER(REPLACE([RegAddressPostCode], N' ', N''))) PERSISTED,
+    [Latitude] FLOAT NULL,
+    [Longitude] FLOAT NULL,
+    [Location] GEOGRAPHY NULL,
+    [LocationLookupStatus] NVARCHAR(30) NULL,
+    [LocationLookupMessage] NVARCHAR(255) NULL,
+    [LocationLookupAtUtc] DATETIME2(7) NULL,
     CONSTRAINT [PK_Company] PRIMARY KEY CLUSTERED ([Id] ASC)
 );
 
@@ -96,3 +103,22 @@ GO
 CREATE NONCLUSTERED INDEX [IX_Company_SicCodeSicText4]
     ON [dbo].[Company] ([SicCodeSicText4])
     WHERE [SicCodeSicText4] IS NOT NULL;
+
+GO
+
+CREATE NONCLUSTERED INDEX [IX_Company_NormalizedPostcode]
+    ON [dbo].[Company] ([NormalizedPostcode]);
+
+GO
+
+CREATE NONCLUSTERED INDEX [IX_Company_Latitude_Longitude]
+    ON [dbo].[Company] ([Latitude], [Longitude])
+    WHERE [Latitude] IS NOT NULL
+        AND [Longitude] IS NOT NULL;
+
+GO
+
+CREATE SPATIAL INDEX [SIX_Company_Location]
+    ON [dbo].[Company] ([Location])
+    USING GEOGRAPHY_AUTO_GRID
+    WITH (CELLS_PER_OBJECT = 16);

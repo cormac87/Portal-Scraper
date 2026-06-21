@@ -346,13 +346,14 @@ code {
 
 .company-search-form {
     display: grid;
-    grid-template-columns: minmax(14rem, 1fr) minmax(18rem, 1.4fr);
+    grid-template-columns: minmax(14rem, 1fr) minmax(18rem, 1.4fr) minmax(12rem, 0.75fr) minmax(8rem, 0.45fr);
     gap: 0.85rem;
     align-items: end;
 }
 
 .company-search-form label,
-.company-file-picker {
+.company-file-picker,
+.company-location-cache-controls label {
     display: grid;
     gap: 0.35rem;
     min-width: 0;
@@ -364,6 +365,17 @@ code {
 
 .company-upload-panel {
     max-width: 42rem;
+}
+
+.company-location-cache-panel {
+    max-width: 48rem;
+}
+
+.company-location-cache-controls {
+    display: flex;
+    gap: 0.75rem;
+    align-items: end;
+    flex-wrap: wrap;
 }
 
 .planning-search-criteria {

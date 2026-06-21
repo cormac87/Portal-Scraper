@@ -1,0 +1,169 @@
+@page "/companies/locations"
+@inject ICompanyLocationService CompanyLocationService
+
+<PageTitle>Company Locations</PageTitle>
+
+<section class="page-header">
+    <div>
+        <p class="eyebrow">Companies House</p>
+        <h1>Company locations</h1>
+    </div>
+    <div class="page-header-actions">
+        <a class="secondary-button" href="/companies">Companies</a>
+    </div>
+</section>
+
+<section class="planning-summary">
+    <article class="stat-card">
+        <span>Total companies</span>
+        <strong>@FormatCount(_stats?.TotalCompanies)</strong>
+    </article>
+    <article class="stat-card">
+        <span>With coordinates</span>
+        <strong>@FormatCount(_stats?.CompaniesWithLocation)</strong>
+    </article>
+    <article class="stat-card">
+        <span>Pending postcodes</span>
+        <strong>@FormatCount(_stats?.DistinctPostcodesPendingLookup)</strong>
+    </article>
+</section>
+
+<section class="planning-search company-location-cache-panel">
+    <div class="company-location-cache-controls">
+        <label>
+            <span class="field-label">Max postcodes this run</span>
+            <input class="text-input"
+                   type="number"
+                   min="1"
+                   step="100"
+                   @bind="_maxPostcodes"
+                   disabled="@_isRefreshing" />
+        </label>
+        <button class="primary-button" type="button" @onclick="RefreshCompanyLocationsAsync" disabled="@_isRefreshing">
+            @RefreshButtonLabel
+        </button>
+        <button class="secondary-button" type="button" @onclick="LoadStatsAsync" disabled="@_isRefreshing">
+            Refresh stats
+        </button>
+    </div>
+</section>
+
+@if (!string.IsNullOrWhiteSpace(_errorMessage))
+{
+    <p class="error-message">@_errorMessage</p>
+}
+
+@if (_refreshResult is not null)
+{
+    <section class="scrape-result">
+        <h2>Location refresh complete</h2>
+        <p>
+            Updated <strong>@_refreshResult.UpdatedCompanies.ToString("N0")</strong> companies from
+            <strong>@_refreshResult.UpdatedPostcodes.ToString("N0")</strong> postcodes.
+            Not found <strong>@_refreshResult.NotFoundPostcodes.ToString("N0")</strong>,
+            failed <strong>@_refreshResult.FailedPostcodes.ToString("N0")</strong>.
+        </p>
+    </section>
+}
+
+@if (_refreshResult?.Items.Count > 0)
+{
+    <section class="planning-card authority-geocache-results">
+        <header>
+            <div>
+                <p class="planning-authority">Latest refresh</p>
+                <h2 class="planning-title">@_refreshResult.Items.Count postcode results</h2>
+            </div>
+        </header>
+        <div class="authority-geocache-list">
+            @foreach (var item in _refreshResult.Items)
+            {
+                <article class="authority-geocache-row" @key="item.Postcode">
+                    <div>
+                        <strong>@item.Postcode</strong>
+                        @if (!string.IsNullOrWhiteSpace(item.Message))
+                        {
+                            <p>@item.Message</p>
+                        }
+                    </div>
+                    <span class="status-pill">@item.Status</span>
+                    <span>@item.CompanyCount.ToString("N0") company(s)</span>
+                    <span>@FormatCoordinate(item.Latitude, item.Longitude)</span>
+                </article>
+            }
+        </div>
+    </section>
+}
+
+@code {
+    private int _maxPostcodes = 1000;
+    private bool _isRefreshing;
+    private string? _errorMessage;
+    private CompanyLocationCacheStats? _stats;
+    private CompanyLocationRefreshResult? _refreshResult;
+
+    private string RefreshButtonLabel => _isRefreshing ? "Calculating..." : "Calculate company locations";
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadStatsAsync();
+    }
+
+    private async Task LoadStatsAsync()
+    {
+        _errorMessage = null;
+
+        try
+        {
+            _stats = await CompanyLocationService.GetCacheStatsAsync();
+        }
+        catch (Exception ex)
+        {
+            _errorMessage = $"Unable to load company location stats: {ex.Message}";
+        }
+    }
+
+    private async Task RefreshCompanyLocationsAsync()
+    {
+        if (_isRefreshing)
+        {
+            return;
+        }
+
+        _isRefreshing = true;
+        _errorMessage = null;
+        _refreshResult = null;
+
+        try
+        {
+            _refreshResult = await CompanyLocationService.RefreshCompanyLocationsAsync(_maxPostcodes);
+            _stats = _refreshResult.Stats;
+        }
+        catch (Exception ex)
+        {
+            _errorMessage = $"Unable to calculate company locations: {ex.Message}";
+            await LoadStatsAsync();
+        }
+        finally
+        {
+            _isRefreshing = false;
+        }
+    }
+
+    private static string FormatCount(long? value)
+    {
+        return value.HasValue ? value.Value.ToString("N0") : "Loading";
+    }
+
+    private static string FormatCount(int? value)
+    {
+        return value.HasValue ? value.Value.ToString("N0") : "Loading";
+    }
+
+    private static string FormatCoordinate(double? latitude, double? longitude)
+    {
+        return latitude is null || longitude is null
+            ? "No coordinates"
+            : $"{latitude.Value:0.000000}, {longitude.Value:0.000000}";
+    }
+}

@@ -541,6 +541,7 @@ CREATE TABLE #CompanyImport
         var updateColumns = ImportColumns
             .Where(column => column.Name != nameof(Company.CompanyNumber))
             .Select(column => $"    [target].[{column.Name}] = [source].[{column.Name}]")
+            .Concat(GetLocationCacheResetUpdateColumns())
             .Append($"    [target].[{nameof(Company.ImportedAtUtc)}] = [source].[{nameof(Company.ImportedAtUtc)}]");
 
         var insertColumns = ImportColumns
@@ -570,6 +571,18 @@ OUTPUT $action INTO @MergeActions;
 SELECT [Action], COUNT(*) AS [ActionCount]
 FROM @MergeActions
 GROUP BY [Action];";
+    }
+
+    private static IEnumerable<string> GetLocationCacheResetUpdateColumns()
+    {
+        const string postcodeChangedExpression = "ISNULL(UPPER(REPLACE([target].[RegAddressPostCode], N' ', N'')), N'') <> ISNULL(UPPER(REPLACE([source].[RegAddressPostCode], N' ', N'')), N'')";
+
+        yield return $"    [target].[{nameof(Company.Latitude)}] = CASE WHEN {postcodeChangedExpression} THEN NULL ELSE [target].[{nameof(Company.Latitude)}] END";
+        yield return $"    [target].[{nameof(Company.Longitude)}] = CASE WHEN {postcodeChangedExpression} THEN NULL ELSE [target].[{nameof(Company.Longitude)}] END";
+        yield return $"    [target].[{nameof(Company.Location)}] = CASE WHEN {postcodeChangedExpression} THEN NULL ELSE [target].[{nameof(Company.Location)}] END";
+        yield return $"    [target].[{nameof(Company.LocationLookupStatus)}] = CASE WHEN {postcodeChangedExpression} THEN NULL ELSE [target].[{nameof(Company.LocationLookupStatus)}] END";
+        yield return $"    [target].[{nameof(Company.LocationLookupMessage)}] = CASE WHEN {postcodeChangedExpression} THEN NULL ELSE [target].[{nameof(Company.LocationLookupMessage)}] END";
+        yield return $"    [target].[{nameof(Company.LocationLookupAtUtc)}] = CASE WHEN {postcodeChangedExpression} THEN NULL ELSE [target].[{nameof(Company.LocationLookupAtUtc)}] END";
     }
 
     private sealed class CompanyImportColumn(
