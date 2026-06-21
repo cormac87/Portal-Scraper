@@ -8,9 +8,18 @@ public sealed class CompanyDataService(IDbContextFactory<ApplicationDbContext> d
 {
     public async Task<int> GetCompanyCountAsync(CancellationToken cancellationToken = default)
     {
+        return await GetCompanyCountAsync(CompanySearchFilters.Empty, cancellationToken);
+    }
+
+    public async Task<int> GetCompanyCountAsync(
+        CompanySearchFilters filters,
+        CancellationToken cancellationToken = default)
+    {
         await using var db = await dbFactory.CreateDbContextAsync(cancellationToken);
 
-        return await db.Companies.CountAsync(cancellationToken);
+        return await CompanyQuery
+            .ApplyFilters(db.Companies.AsNoTracking(), filters)
+            .CountAsync(cancellationToken);
     }
 
     public async Task<CompanySearchPage> SearchCompaniesAsync(

@@ -6,6 +6,10 @@ public interface ICompanyDataService
 {
     Task<int> GetCompanyCountAsync(CancellationToken cancellationToken = default);
 
+    Task<int> GetCompanyCountAsync(
+        CompanySearchFilters filters,
+        CancellationToken cancellationToken = default);
+
     Task<CompanySearchPage> SearchCompaniesAsync(
         CompanySearchFilters filters,
         int page,

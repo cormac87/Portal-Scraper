@@ -1,4 +1,5 @@
 @page "/companies"
+@implements IDisposable
 @using System.IO
 @inject ICompanyDataService CompanyDataService
 @inject ICompanyExcelExportService ExcelExportService
@@ -46,13 +47,20 @@
 
         <label>
             <span class="field-label">SIC code</span>
-            <select class="text-input" @bind="_selectedSicCode" disabled="@_isLoadingSicCodes">
-                <option value="">@SicCodePlaceholder</option>
+            <input class="text-input"
+                   type="search"
+                   list="sic-code-options"
+                   value="@_sicCodeSearchText"
+                   @oninput="OnSicCodeSearchInput"
+                   placeholder="@SicCodePlaceholder"
+                   disabled="@_isLoadingSicCodes"
+                   autocomplete="off" />
+            <datalist id="sic-code-options">
                 @foreach (var option in _sicCodeOptions)
                 {
-                    <option value="@option.Code">@option.Label</option>
+                    <option value="@option.Label"></option>
                 }
-            </select>
+            </datalist>
         </label>
 
         <div class="planning-search-actions">
@@ -170,15 +178,20 @@ else
     private Company? _selectedCompany;
     private string? _companyName;
     private string? _selectedSicCode;
+    private string? _sicCodeSearchText;
     private string? _errorMessage;
     private int _companyPage = 1;
     private int? _companyTotalCount;
     private int? _companyResultCount;
+    private CompanySearchFilters? _companyResultCountFilters;
+    private int _companyResultCountRequestId;
+    private CancellationTokenSource? _companyResultCountCts;
     private bool _isLoading = true;
     private bool _isSearching;
     private bool _isExporting;
     private bool _isScrapingContacts;
     private bool _isLoadingSicCodes = true;
+    private bool _isLoadingCompanyResultCount;
     private bool _hasNextCompanyPage;
     private bool _hasLoadedCompanyMetadata;
     private bool _isExportColumnsModalOpen;
@@ -187,13 +200,9 @@ else
     private int? CompanyTotalPages => _companyResultCount.HasValue
         ? PlanningPagination.GetTotalPages(_companyResultCount.Value, CompanyPageSize)
         : null;
-    private string PaginationSummary => PlanningPagination.GetSummary(
-        _companyResultCount,
-        _companyPage,
-        CompanyPageSize,
-        _companies.Count,
-        _hasNextCompanyPage,
-        "company");
+    private string PaginationSummary => _companyResultCount.HasValue
+        ? PlanningPagination.GetSummary(_companyResultCount.Value, _companyPage, CompanyPageSize, "company")
+        : GetCompanyPaginationSummaryWhileCounting();
     private string CompanyTotalCountText => _companyTotalCount.HasValue
         ? _companyTotalCount.Value.ToString("N0")
         : "Loading";
@@ -234,14 +243,41 @@ else
         await LoadSicCodeOptionsAsync();
     }
 
+    private string GetCompanyPaginationSummaryWhileCounting()
+    {
+        if (_companies.Count == 0)
+        {
+            return "0 company(s)";
+        }
+
+        var start = PlanningPagination.GetPageSkip(_companyPage, CompanyPageSize) + 1;
+        var end = start + _companies.Count - 1;
+        var suffix = _isLoadingCompanyResultCount
+            ? ", counting total"
+            : string.Empty;
+
+        return $"Showing {start}-{end}{suffix} company(s)";
+    }
+
     private async Task LoadCompanyCountAsync()
     {
+        if (_companyTotalCount.HasValue)
+        {
+            if (!_lastFilters.HasActive)
+            {
+                SetCompanyResultCount(CompanySearchFilters.Empty, _companyTotalCount.Value);
+            }
+
+            await InvokeAsync(StateHasChanged);
+            return;
+        }
+
         try
         {
             _companyTotalCount = await CompanyDataService.GetCompanyCountAsync();
             if (!_lastFilters.HasActive)
             {
-                _companyResultCount = _companyTotalCount;
+                SetCompanyResultCount(CompanySearchFilters.Empty, _companyTotalCount.Value);
             }
         }
         catch (Exception ex)
@@ -260,6 +296,7 @@ else
         try
         {
             _sicCodeOptions = (await CompanyDataService.GetSicCodeOptionsAsync()).ToList();
+            SyncSicCodeSearchText();
         }
         catch (Exception ex)
         {
@@ -275,8 +312,10 @@ else
 
     private async Task SearchAsync()
     {
+        ResolveSicCodeSelection();
         _companyPage = 1;
         _companyResultCount = null;
+        _companyResultCountFilters = null;
         _lastFilters = new CompanySearchFilters(_companyName, _selectedSicCode);
         await LoadCompanyPageAsync();
     }
@@ -284,31 +323,52 @@ else
     private async Task ClearSearchAsync()
     {
         _companyName = null;
-        _selectedSicCode = null;
+        ClearSicCodeSelection();
         _companyPage = 1;
         _companyResultCount = _companyTotalCount;
+        _companyResultCountFilters = _companyTotalCount.HasValue ? CompanySearchFilters.Empty : null;
         _lastFilters = CompanySearchFilters.Empty;
         await LoadCompanyPageAsync();
     }
 
     private async Task LoadCompanyPageAsync()
     {
+        CancelCompanyResultCountLoad();
         _isLoading = !_isSearching;
         _isSearching = true;
+        _isLoadingCompanyResultCount = false;
         _errorMessage = null;
+        var filters = _lastFilters;
 
         try
         {
-            var page = await CompanyDataService.SearchCompaniesAsync(_lastFilters, _companyPage, CompanyPageSize);
+            var page = await CompanyDataService.SearchCompaniesAsync(filters, _companyPage, CompanyPageSize);
             _companies = page.Companies.ToList();
             _companyPage = page.CurrentPage;
-            _companyResultCount = page.TotalCount ?? (!_lastFilters.HasActive ? _companyTotalCount : null);
             _hasNextCompanyPage = page.HasNextPage;
+
+            var exactCount = page.TotalCount
+                ?? InferCompanyResultCount(page.CurrentPage, page.Companies.Count, page.HasNextPage);
+            if (exactCount.HasValue)
+            {
+                SetCompanyResultCount(filters, exactCount.Value);
+            }
+            else if (_companyResultCountFilters != filters)
+            {
+                _companyResultCount = null;
+                _companyResultCountFilters = null;
+            }
+
+            if (!_companyResultCount.HasValue)
+            {
+                StartCompanyResultCountLoad(filters);
+            }
         }
         catch (Exception ex)
         {
             _companies = [];
             _companyResultCount = 0;
+            _companyResultCountFilters = filters;
             _hasNextCompanyPage = false;
             _errorMessage = $"Unable to load companies: {ex.Message}";
         }
@@ -317,6 +377,91 @@ else
             _isLoading = false;
             _isSearching = false;
         }
+    }
+
+    private static int? InferCompanyResultCount(int currentPage, int loadedCount, bool hasNextPage)
+    {
+        return hasNextPage
+            ? null
+            : PlanningPagination.GetPageSkip(currentPage, CompanyPageSize) + loadedCount;
+    }
+
+    private void SetCompanyResultCount(CompanySearchFilters filters, int count)
+    {
+        _companyResultCount = count;
+        _companyResultCountFilters = filters;
+        _isLoadingCompanyResultCount = false;
+
+        if (!filters.HasActive)
+        {
+            _companyTotalCount = count;
+        }
+    }
+
+    private void StartCompanyResultCountLoad(CompanySearchFilters filters)
+    {
+        CancelCompanyResultCountLoad();
+        _isLoadingCompanyResultCount = true;
+
+        var requestId = ++_companyResultCountRequestId;
+        var cts = new CancellationTokenSource();
+        _companyResultCountCts = cts;
+        _ = LoadCompanyResultCountInBackgroundAsync(filters, requestId, cts);
+    }
+
+    private async Task LoadCompanyResultCountInBackgroundAsync(
+        CompanySearchFilters filters,
+        int requestId,
+        CancellationTokenSource cts)
+    {
+        try
+        {
+            var count = await CompanyDataService.GetCompanyCountAsync(filters, cts.Token);
+            await InvokeAsync(() =>
+            {
+                if (cts.IsCancellationRequested || requestId != _companyResultCountRequestId)
+                {
+                    return;
+                }
+
+                SetCompanyResultCount(filters, count);
+                StateHasChanged();
+            });
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (Exception ex)
+        {
+            await InvokeAsync(() =>
+            {
+                if (cts.IsCancellationRequested || requestId != _companyResultCountRequestId)
+                {
+                    return;
+                }
+
+                _isLoadingCompanyResultCount = false;
+                _errorMessage = $"Unable to load filtered company count: {ex.Message}";
+                StateHasChanged();
+            });
+        }
+        finally
+        {
+            if (_companyResultCountCts == cts)
+            {
+                _companyResultCountCts = null;
+            }
+
+            cts.Dispose();
+        }
+    }
+
+    private void CancelCompanyResultCountLoad()
+    {
+        _companyResultCountRequestId++;
+        _isLoadingCompanyResultCount = false;
+        _companyResultCountCts?.Cancel();
+        _companyResultCountCts = null;
     }
 
     private async Task PreviousCompanyPageAsync()
@@ -446,5 +591,80 @@ else
     private void OnCompanyNameInput(ChangeEventArgs args)
     {
         _companyName = args.Value?.ToString();
+    }
+
+    private void OnSicCodeSearchInput(ChangeEventArgs args)
+    {
+        _sicCodeSearchText = args.Value?.ToString();
+        _selectedSicCode = FindSicCodeOption(_sicCodeSearchText)?.Code;
+    }
+
+    private void ResolveSicCodeSelection()
+    {
+        if (string.IsNullOrWhiteSpace(_sicCodeSearchText))
+        {
+            ClearSicCodeSelection();
+            return;
+        }
+
+        var option = FindSicCodeOption(_sicCodeSearchText);
+        _selectedSicCode = option?.Code;
+        if (option is not null)
+        {
+            _sicCodeSearchText = option.Label;
+        }
+    }
+
+    private void SyncSicCodeSearchText()
+    {
+        if (string.IsNullOrWhiteSpace(_selectedSicCode))
+        {
+            return;
+        }
+
+        var option = _sicCodeOptions.FirstOrDefault(option =>
+            string.Equals(option.Code, _selectedSicCode, StringComparison.OrdinalIgnoreCase));
+        if (option is not null)
+        {
+            _sicCodeSearchText = option.Label;
+        }
+    }
+
+    private CompanySicCodeOption? FindSicCodeOption(string? searchText)
+    {
+        if (string.IsNullOrWhiteSpace(searchText))
+        {
+            return null;
+        }
+
+        var text = searchText.Trim();
+        var exactOption = _sicCodeOptions.FirstOrDefault(option =>
+            string.Equals(option.Code, text, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(option.Label, text, StringComparison.OrdinalIgnoreCase));
+        if (exactOption is not null)
+        {
+            return exactOption;
+        }
+
+        var separatorIndex = text.IndexOf(" - ", StringComparison.Ordinal);
+        if (separatorIndex <= 0)
+        {
+            return null;
+        }
+
+        var code = text[..separatorIndex].Trim();
+        return _sicCodeOptions.FirstOrDefault(option =>
+            string.Equals(option.Code, code, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private void ClearSicCodeSelection()
+    {
+        _selectedSicCode = null;
+        _sicCodeSearchText = null;
+    }
+
+    public void Dispose()
+    {
+        CancelCompanyResultCountLoad();
     }
 }
