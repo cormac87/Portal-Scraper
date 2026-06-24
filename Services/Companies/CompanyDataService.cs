@@ -16,9 +16,14 @@ public sealed class CompanyDataService(IDbContextFactory<ApplicationDbContext> d
         CancellationToken cancellationToken = default)
     {
         await using var db = await dbFactory.CreateDbContextAsync(cancellationToken);
+        if (CompanyQuery.RequiresFullTextSearch(filters)
+            && !await CompanyQuery.IsFullTextSearchAvailableAsync(db, cancellationToken))
+        {
+            throw new InvalidOperationException("Company name search requires SQL Server Full-Text Search and the company full-text index.");
+        }
 
         return await CompanyQuery
-            .ApplyFilters(db.Companies.AsNoTracking(), filters)
+            .CreateSearchQuery(db, filters)
             .CountAsync(cancellationToken);
     }
 
@@ -29,39 +34,44 @@ public sealed class CompanyDataService(IDbContextFactory<ApplicationDbContext> d
         CancellationToken cancellationToken = default)
     {
         await using var db = await dbFactory.CreateDbContextAsync(cancellationToken);
+        if (CompanyQuery.RequiresFullTextSearch(filters)
+            && !await CompanyQuery.IsFullTextSearchAvailableAsync(db, cancellationToken))
+        {
+            return new CompanySearchPage([], TotalCount: 0, CurrentPage: 1, HasNextPage: false, IsFullTextSearchAvailable: false);
+        }
 
         var normalizedPageSize = Math.Max(1, pageSize);
         var currentPage = Math.Max(1, page);
-        var query = CompanyQuery.ApplyFilters(db.Companies.AsNoTracking(), filters);
+        var query = CompanyQuery.CreateSearchQuery(db, filters);
         var origin = filters.Location is null ? null : CompanyQuery.CreatePoint(filters.Location);
         var companies = await CompanyQuery.ApplyPageSort(query, filters)
             .Skip(PlanningPagination.GetPageSkip(currentPage, normalizedPageSize))
             .Take(normalizedPageSize + 1)
-            .Select(company => new Company
+            .Select(result => new Company
             {
-                Id = company.Id,
-                CompanyName = company.CompanyName,
-                CompanyNumber = company.CompanyNumber,
-                Email = company.Email,
-                PhoneNumber = company.PhoneNumber,
-                RegAddressAddressLine1 = company.RegAddressAddressLine1,
-                RegAddressAddressLine2 = company.RegAddressAddressLine2,
-                RegAddressPostTown = company.RegAddressPostTown,
-                RegAddressCounty = company.RegAddressCounty,
-                RegAddressPostCode = company.RegAddressPostCode,
-                Latitude = company.Latitude,
-                Longitude = company.Longitude,
-                LocationLookupStatus = company.LocationLookupStatus,
-                CompanyCategory = company.CompanyCategory,
-                CompanyStatus = company.CompanyStatus,
-                IncorporationDate = company.IncorporationDate,
-                SicCodeSicText1 = company.SicCodeSicText1,
-                SicCodeSicText2 = company.SicCodeSicText2,
-                SicCodeSicText3 = company.SicCodeSicText3,
-                SicCodeSicText4 = company.SicCodeSicText4,
-                DistanceKm = origin == null || company.Location == null
+                Id = result.Company.Id,
+                CompanyName = result.Company.CompanyName,
+                CompanyNumber = result.Company.CompanyNumber,
+                Email = result.Company.Email,
+                PhoneNumber = result.Company.PhoneNumber,
+                RegAddressAddressLine1 = result.Company.RegAddressAddressLine1,
+                RegAddressAddressLine2 = result.Company.RegAddressAddressLine2,
+                RegAddressPostTown = result.Company.RegAddressPostTown,
+                RegAddressCounty = result.Company.RegAddressCounty,
+                RegAddressPostCode = result.Company.RegAddressPostCode,
+                Latitude = result.Company.Latitude,
+                Longitude = result.Company.Longitude,
+                LocationLookupStatus = result.Company.LocationLookupStatus,
+                CompanyCategory = result.Company.CompanyCategory,
+                CompanyStatus = result.Company.CompanyStatus,
+                IncorporationDate = result.Company.IncorporationDate,
+                SicCodeSicText1 = result.Company.SicCodeSicText1,
+                SicCodeSicText2 = result.Company.SicCodeSicText2,
+                SicCodeSicText3 = result.Company.SicCodeSicText3,
+                SicCodeSicText4 = result.Company.SicCodeSicText4,
+                DistanceKm = origin == null || result.Company.Location == null
                     ? null
-                    : company.Location.Distance(origin) / 1000d
+                    : result.Company.Location.Distance(origin) / 1000d
             })
             .ToListAsync(cancellationToken);
         var hasNextPage = companies.Count > normalizedPageSize;

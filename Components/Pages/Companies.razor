@@ -417,6 +417,17 @@ else
         try
         {
             var page = await CompanyDataService.SearchCompaniesAsync(filters, _companyPage, CompanyPageSize);
+            if (!page.IsFullTextSearchAvailable)
+            {
+                _companies = [];
+                _companyPage = 1;
+                _companyResultCount = 0;
+                _companyResultCountFilters = filters;
+                _hasNextCompanyPage = false;
+                _errorMessage = "Company name search requires SQL Server Full-Text Search and the company full-text index. Install the SQL Server Full-Text feature, then run the schema update script.";
+                return;
+            }
+
             _companies = page.Companies.ToList();
             _companyPage = page.CurrentPage;
             _hasNextCompanyPage = page.HasNextPage;

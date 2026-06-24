@@ -102,10 +102,16 @@ public sealed class CompanyExcelExportService(
         }
 
         await using var db = await dbFactory.CreateDbContextAsync(cancellationToken);
-        var query = CompanyQuery.ApplyDefaultSort(CompanyQuery.ApplyFilters(
-            db.Companies.AsNoTracking(),
-            request.Filters),
-            request.Filters);
+        if (CompanyQuery.RequiresFullTextSearch(request.Filters)
+            && !await CompanyQuery.IsFullTextSearchAvailableAsync(db, cancellationToken))
+        {
+            throw new InvalidOperationException("Company name search export requires SQL Server Full-Text Search and the company full-text index.");
+        }
+
+        var query = CompanyQuery.ApplyDefaultSort(
+                CompanyQuery.CreateSearchQuery(db, request.Filters),
+                request.Filters)
+            .Select(result => result.Company);
 
         var totalCount = await query.CountAsync(cancellationToken);
         if (totalCount > ExcelMaxDataRows)

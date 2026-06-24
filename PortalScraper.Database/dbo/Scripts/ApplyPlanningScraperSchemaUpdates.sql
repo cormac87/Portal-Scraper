@@ -460,6 +460,28 @@ IF FULLTEXTSERVICEPROPERTY('IsFullTextInstalled') = 1
     AND NOT EXISTS (
         SELECT 1
         FROM sys.fulltext_indexes
+        WHERE object_id = OBJECT_ID('dbo.Company')
+    )
+BEGIN
+    EXEC(N'
+        CREATE FULLTEXT INDEX ON [dbo].[Company]
+        (
+            [CompanyName] LANGUAGE 2057
+        )
+        KEY INDEX [PK_Company]
+        ON [PlanningSearchCatalog]
+        WITH CHANGE_TRACKING AUTO;');
+END;
+
+IF FULLTEXTSERVICEPROPERTY('IsFullTextInstalled') = 1
+    AND EXISTS (
+        SELECT 1
+        FROM sys.fulltext_catalogs
+        WHERE name = 'PlanningSearchCatalog'
+    )
+    AND NOT EXISTS (
+        SELECT 1
+        FROM sys.fulltext_indexes
         WHERE object_id = OBJECT_ID('dbo.PlanningApplication')
     )
 BEGIN

@@ -109,18 +109,24 @@ public sealed class CompanyContactScraperService(
         var messages = new List<string>();
 
         await using var db = await dbFactory.CreateDbContextAsync(cancellationToken);
-        var baseQuery = CompanyQuery.ApplyFilters(db.Companies.AsNoTracking(), filters);
+        if (CompanyQuery.RequiresFullTextSearch(filters)
+            && !await CompanyQuery.IsFullTextSearchAvailableAsync(db, cancellationToken))
+        {
+            throw new InvalidOperationException("Company contact scraping requires SQL Server Full-Text Search and the company full-text index when filtering by company name.");
+        }
+
+        var baseQuery = CompanyQuery.CreateSearchQuery(db, filters);
         var candidateCompanies = await baseQuery.CountAsync(cancellationToken);
         var candidates = await CompanyQuery.ApplyDefaultSort(baseQuery
-                .Where(company =>
-                    company.CompanyName != null
-                    && company.CompanyName != string.Empty
-                    && (company.Email == null || company.Email == string.Empty)),
+                .Where(result =>
+                    result.Company.CompanyName != null
+                    && result.Company.CompanyName != string.Empty
+                    && (result.Company.Email == null || result.Company.Email == string.Empty)),
                 filters)
-            .Select(company => new CompanyContactCandidate(
-                company.Id,
-                company.CompanyNumber,
-                company.CompanyName!))
+            .Select(result => new CompanyContactCandidate(
+                result.Company.Id,
+                result.Company.CompanyNumber,
+                result.Company.CompanyName!))
             .ToListAsync(cancellationToken);
 
         var skippedCompanies = candidateCompanies - candidates.Count;

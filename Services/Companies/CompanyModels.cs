@@ -31,7 +31,8 @@ public sealed record CompanySearchPage(
     IReadOnlyList<Company> Companies,
     int? TotalCount,
     int CurrentPage,
-    bool HasNextPage);
+    bool HasNextPage,
+    bool IsFullTextSearchAvailable = true);
 
 public sealed record CompanySicCodeOption(
     string Code,

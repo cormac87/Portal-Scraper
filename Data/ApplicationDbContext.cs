@@ -238,5 +238,11 @@ public sealed class ApplicationDbContext(DbContextOptions<ApplicationDbContext> 
                 .HasDatabaseName("IX_Company_Latitude_Longitude")
                 .HasFilter("[Latitude] IS NOT NULL AND [Longitude] IS NOT NULL");
         });
+
+        modelBuilder.Entity<CompanyFullTextSearchMatch>(entity =>
+        {
+            entity.HasNoKey();
+            entity.ToView(null);
+        });
     }
 }
