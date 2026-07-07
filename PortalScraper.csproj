@@ -23,4 +23,8 @@
     <PackageReference Include="PdfPig" Version="0.1.14" />
     <PackageReference Include="System.Text.Encoding.CodePages" Version="9.0.0" />
   </ItemGroup>
+
+  <ItemGroup>
+    <Content Include="Services\Nlp\spacy_org_extractor.py" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
 </Project>

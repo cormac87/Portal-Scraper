@@ -103,6 +103,24 @@ BEGIN
         WHERE [CompanyName] IS NOT NULL;
 END;
 
+IF COL_LENGTH('dbo.Company', 'NormalizedCompanyName') IS NULL
+BEGIN
+    ALTER TABLE [dbo].[Company]
+        ADD [NormalizedCompanyName] AS (UPPER(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(ISNULL([CompanyName], N''), N'&', N'AND'), N' ', N''), N'.', N''), N',', N''), N'''', N''), N'-', N''), N'/', N''), N'(', N''), N')', N''), N':', N''), N';', N'')) PERSISTED;
+END;
+
+IF NOT EXISTS (
+    SELECT 1
+    FROM sys.indexes
+    WHERE name = 'IX_Company_NormalizedCompanyName'
+        AND object_id = OBJECT_ID('dbo.Company')
+)
+BEGIN
+    CREATE NONCLUSTERED INDEX [IX_Company_NormalizedCompanyName]
+        ON [dbo].[Company] ([NormalizedCompanyName])
+        WHERE [NormalizedCompanyName] <> N'';
+END;
+
 IF NOT EXISTS (
     SELECT 1
     FROM sys.indexes

@@ -69,9 +69,9 @@ public sealed class CompanyDataService(IDbContextFactory<ApplicationDbContext> d
                 SicCodeSicText2 = result.Company.SicCodeSicText2,
                 SicCodeSicText3 = result.Company.SicCodeSicText3,
                 SicCodeSicText4 = result.Company.SicCodeSicText4,
-                DistanceKm = origin == null || result.Company.Location == null
+                DistanceKm = origin == null || result.CompanyLocation == null
                     ? null
-                    : result.Company.Location.Distance(origin) / 1000d
+                    : result.CompanyLocation.Distance(origin) / 1000d
             })
             .ToListAsync(cancellationToken);
         var hasNextPage = companies.Count > normalizedPageSize;

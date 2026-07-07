@@ -238,11 +238,11 @@ END;
 
 CREATE TABLE #CompanyLocationLookup
 (
-    [NormalizedPostcode] NVARCHAR(20) NOT NULL PRIMARY KEY,
+    [NormalizedPostcode] NVARCHAR(20) COLLATE DATABASE_DEFAULT NOT NULL PRIMARY KEY,
     [Latitude] FLOAT NULL,
     [Longitude] FLOAT NULL,
-    [Status] NVARCHAR(30) NOT NULL,
-    [Message] NVARCHAR(255) NULL
+    [Status] NVARCHAR(30) COLLATE DATABASE_DEFAULT NOT NULL,
+    [Message] NVARCHAR(255) COLLATE DATABASE_DEFAULT NULL
 );", cancellationToken);
 
         using var bulkCopy = new SqlBulkCopy(connection, SqlBulkCopyOptions.TableLock, externalTransaction: null)

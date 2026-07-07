@@ -521,7 +521,7 @@ public sealed class CompanyImportService(
     private static string BuildCreateTempTableSql()
     {
         var columnDefinitions = ImportColumns
-            .Select(column => $"    [{column.Name}] {column.SqlType} {(column.IsRequired ? "NOT NULL" : "NULL")}")
+            .Select(column => $"    [{column.Name}] {column.SqlType} COLLATE DATABASE_DEFAULT {(column.IsRequired ? "NOT NULL" : "NULL")}")
             .Append($"    [{nameof(Company.ImportedAtUtc)}] DATETIME2(7) NOT NULL");
 
         return $@"

@@ -1147,6 +1147,67 @@ code {
     gap: 0.75rem;
 }
 
+.modal-action-message {
+    margin: 0;
+}
+
+.organisation-result-list {
+    display: grid;
+    gap: 0.8rem;
+    max-height: 36rem;
+    overflow: auto;
+}
+
+.organisation-result-card {
+    display: grid;
+    gap: 0.75rem;
+    padding: 0.9rem;
+    border: 1px solid rgba(216, 224, 238, 0.9);
+    border-radius: 0.9rem;
+    background: #fff;
+}
+
+.organisation-result-card header {
+    display: flex;
+    gap: 1rem;
+    align-items: flex-start;
+    justify-content: space-between;
+}
+
+.organisation-result-card h3,
+.organisation-result-card p {
+    margin: 0;
+}
+
+.organisation-result-card h3 {
+    overflow-wrap: anywhere;
+    font-size: 1rem;
+}
+
+.organisation-result-card p {
+    color: var(--muted);
+    font-weight: 600;
+}
+
+.organisation-document-list {
+    display: grid;
+    gap: 0.45rem;
+}
+
+.organisation-document-list div {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 0.75rem;
+    align-items: center;
+    padding: 0.55rem 0.65rem;
+    border-radius: 0.65rem;
+    background: rgba(248, 250, 252, 0.95);
+}
+
+.organisation-document-list span {
+    overflow-wrap: anywhere;
+}
+
 .authority-geocache-results {
     margin-bottom: 1rem;
 }

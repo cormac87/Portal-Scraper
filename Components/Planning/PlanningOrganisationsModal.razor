@@ -1,0 +1,77 @@
+@using PortalScraper.Data
+
+@if (Application is not null && Result is not null)
+{
+    <div class="modal-backdrop modal-backdrop-top" @onclick="OnClose">
+        <section class="modal-panel organisations-modal" role="dialog" aria-modal="true" aria-labelledby="organisations-modal-title" @onclick:stopPropagation="true">
+            <header class="modal-header">
+                <div>
+                    <p class="planning-authority">@PlanningDisplayFormatter.DisplayValue(Application.ApplicationReference)</p>
+                    <h2 id="organisations-modal-title">Organisations found (@Result.Organisations.Count)</h2>
+                    <p class="planning-title">@Summary</p>
+                </div>
+                <button class="secondary-button" type="button" @onclick="OnClose">Close</button>
+            </header>
+
+            @if (Result.Organisations.Count == 0)
+            {
+                <p class="document-empty">No organisation names were found in the extracted document text.</p>
+            }
+            else
+            {
+                <div class="organisation-result-list">
+                    @foreach (var organisation in Result.Organisations)
+                    {
+                        <article class="organisation-result-card" @key="organisation.Name">
+                            <header>
+                                <div>
+                                    <h3>@organisation.Name</h3>
+                                    <p>@organisation.DocumentCount document@(organisation.DocumentCount == 1 ? string.Empty : "s")</p>
+                                </div>
+                                <span class="match-count">@organisation.MentionCount mention@(organisation.MentionCount == 1 ? string.Empty : "s")</span>
+                            </header>
+
+                            <div class="organisation-document-list">
+                                @foreach (var document in organisation.Documents)
+                                {
+                                    <div @key="document.DocumentId">
+                                        <span>@document.DocumentName</span>
+                                        <strong>@document.MentionCount</strong>
+                                    </div>
+                                }
+                            </div>
+                        </article>
+                    }
+                </div>
+            }
+        </section>
+    </div>
+}
+
+@code {
+    [Parameter]
+    public PlanningApplication? Application { get; set; }
+
+    [Parameter]
+    public PlanningOrganisationExtractionResult? Result { get; set; }
+
+    [Parameter]
+    public EventCallback OnClose { get; set; }
+
+    private string Summary
+    {
+        get
+        {
+            if (Result is null)
+            {
+                return string.Empty;
+            }
+
+            var processed = $"{Result.ProcessedDocumentCount} document{(Result.ProcessedDocumentCount == 1 ? string.Empty : "s")} scanned";
+            var mentions = $"{Result.TotalMentionCount} mention{(Result.TotalMentionCount == 1 ? string.Empty : "s")}";
+            return Result.SkippedDocumentCount == 0
+                ? $"{processed} | {mentions}"
+                : $"{processed} | {Result.SkippedDocumentCount} skipped | {mentions}";
+        }
+    }
+}

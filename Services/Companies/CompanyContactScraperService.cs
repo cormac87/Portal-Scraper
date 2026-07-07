@@ -119,14 +119,14 @@ public sealed class CompanyContactScraperService(
         var candidateCompanies = await baseQuery.CountAsync(cancellationToken);
         var candidates = await CompanyQuery.ApplyDefaultSort(baseQuery
                 .Where(result =>
-                    result.Company.CompanyName != null
-                    && result.Company.CompanyName != string.Empty
-                    && (result.Company.Email == null || result.Company.Email == string.Empty)),
+                    result.CompanyName != null
+                    && result.CompanyName != string.Empty
+                    && (result.Email == null || result.Email == string.Empty)),
                 filters)
             .Select(result => new CompanyContactCandidate(
-                result.Company.Id,
-                result.Company.CompanyNumber,
-                result.Company.CompanyName!))
+                result.CompanyId,
+                result.CompanyNumber,
+                result.CompanyName!))
             .ToListAsync(cancellationToken);
 
         var skippedCompanies = candidateCompanies - candidates.Count;

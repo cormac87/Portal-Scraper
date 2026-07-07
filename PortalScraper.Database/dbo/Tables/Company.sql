@@ -60,6 +60,7 @@ CREATE TABLE [dbo].[Company]
     [ConfStmtLastMadeUpDate] NVARCHAR(20) NULL,
     [ImportedAtUtc] DATETIME2(7) NOT NULL CONSTRAINT [DF_Company_ImportedAtUtc] DEFAULT (SYSUTCDATETIME()),
     [NormalizedPostcode] AS (UPPER(REPLACE([RegAddressPostCode], N' ', N''))) PERSISTED,
+    [NormalizedCompanyName] AS (UPPER(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(ISNULL([CompanyName], N''), N'&', N'AND'), N' ', N''), N'.', N''), N',', N''), N'''', N''), N'-', N''), N'/', N''), N'(', N''), N')', N''), N':', N''), N';', N'')) PERSISTED,
     [Latitude] FLOAT NULL,
     [Longitude] FLOAT NULL,
     [Location] GEOGRAPHY NULL,
@@ -79,6 +80,12 @@ GO
 CREATE NONCLUSTERED INDEX [IX_Company_CompanyName]
     ON [dbo].[Company] ([CompanyName])
     WHERE [CompanyName] IS NOT NULL;
+
+GO
+
+CREATE NONCLUSTERED INDEX [IX_Company_NormalizedCompanyName]
+    ON [dbo].[Company] ([NormalizedCompanyName])
+    WHERE [NormalizedCompanyName] <> N'';
 
 GO
 

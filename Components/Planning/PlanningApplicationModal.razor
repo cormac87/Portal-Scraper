@@ -82,7 +82,22 @@
                 <button class="secondary-button" type="button" @onclick="OnOpenRelevantDocuments" disabled="@(!CanShowRelevantDocuments)">
                     Show relevant documents
                 </button>
+                <button class="secondary-button" type="button" @onclick="OnFindOrganisations" disabled="@(!CanFindOrganisations)">
+                    @(IsFindingOrganisations ? "Finding organisations..." : "Find organisations")
+                </button>
+                <button class="secondary-button" type="button" @onclick="OnFindCompanyHouseNames" disabled="@(!CanFindCompanyHouseNames)">
+                    @(IsFindingCompanyHouseNames ? "Finding company names..." : "Find Company House Names")
+                </button>
             </footer>
+
+            @if (!string.IsNullOrWhiteSpace(OrganisationExtractionError))
+            {
+                <p class="document-error modal-action-message">@OrganisationExtractionError</p>
+            }
+            @if (!string.IsNullOrWhiteSpace(CompanyHouseNameMatchError))
+            {
+                <p class="document-error modal-action-message">@CompanyHouseNameMatchError</p>
+            }
         </section>
     </div>
 }
@@ -95,6 +110,24 @@
     public bool CanShowRelevantDocuments { get; set; }
 
     [Parameter]
+    public bool CanFindOrganisations { get; set; }
+
+    [Parameter]
+    public bool CanFindCompanyHouseNames { get; set; }
+
+    [Parameter]
+    public bool IsFindingOrganisations { get; set; }
+
+    [Parameter]
+    public bool IsFindingCompanyHouseNames { get; set; }
+
+    [Parameter]
+    public string? OrganisationExtractionError { get; set; }
+
+    [Parameter]
+    public string? CompanyHouseNameMatchError { get; set; }
+
+    [Parameter]
     public EventCallback OnClose { get; set; }
 
     [Parameter]
@@ -102,4 +135,10 @@
 
     [Parameter]
     public EventCallback OnOpenRelevantDocuments { get; set; }
+
+    [Parameter]
+    public EventCallback OnFindOrganisations { get; set; }
+
+    [Parameter]
+    public EventCallback OnFindCompanyHouseNames { get; set; }
 }

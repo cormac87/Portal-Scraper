@@ -27,11 +27,15 @@ builder.Services.Configure<PlanningPortalScraperOptions>(
     builder.Configuration.GetSection(PlanningPortalScraperOptions.SectionName));
 builder.Services.Configure<GoogleMapsGeocodingOptions>(
     builder.Configuration.GetSection(GoogleMapsGeocodingOptions.SectionName));
+builder.Services.Configure<PlanningOrganisationExtractionOptions>(
+    builder.Configuration.GetSection(PlanningOrganisationExtractionOptions.SectionName));
 builder.Services.AddScoped<IPlanningPortalScraper, PlanningPortalScraper>();
 builder.Services.AddScoped<IPlanningDataService, PlanningDataService>();
 builder.Services.AddScoped<IPlanningSearchService, PlanningSearchService>();
 builder.Services.AddScoped<IPlanningAuthorityLocationService, PlanningAuthorityLocationService>();
 builder.Services.AddScoped<IRelevantPlanningDocumentService, RelevantPlanningDocumentService>();
+builder.Services.AddScoped<IPlanningOrganisationExtractionService, SpacyPlanningOrganisationExtractionService>();
+builder.Services.AddScoped<IPlanningCompanyHouseNameMatchService, PlanningCompanyHouseNameMatchService>();
 builder.Services.AddScoped<IPlanningApplicationExcelExportService, PlanningApplicationExcelExportService>();
 builder.Services.AddScoped<IPlanningDocumentContentService, PlanningDocumentContentService>();
 builder.Services.AddScoped<ICompanyDataService, CompanyDataService>();

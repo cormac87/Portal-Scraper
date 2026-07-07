@@ -4,6 +4,8 @@
 @inject IPlanningSearchService PlanningSearchService
 @inject IPlanningPortalScraper Scraper
 @inject IPlanningApplicationExcelExportService ExcelExportService
+@inject IPlanningOrganisationExtractionService OrganisationExtractionService
+@inject IPlanningCompanyHouseNameMatchService CompanyHouseNameMatchService
 @inject IPlanningAuthorityLocationService AuthorityLocationService
 @inject IPostcodeGeocodingService PostcodeGeocodingService
 @inject IJSRuntime JS
@@ -91,9 +93,17 @@ else
 {
     <PlanningApplicationModal Application="@_selectedApplication"
                               CanShowRelevantDocuments="@CanShowRelevantDocuments"
+                              CanFindOrganisations="@CanFindOrganisations"
+                              CanFindCompanyHouseNames="@CanFindCompanyHouseNames"
+                              IsFindingOrganisations="@_isFindingOrganisations"
+                              IsFindingCompanyHouseNames="@_isFindingCompanyHouseNames"
+                              OrganisationExtractionError="@_organisationExtractionError"
+                              CompanyHouseNameMatchError="@_companyHouseNameMatchError"
                               OnClose="CloseApplicationModal"
                               OnOpenDocuments="OpenDocumentsModal"
-                              OnOpenRelevantDocuments="OpenRelevantDocumentsModal" />
+                              OnOpenRelevantDocuments="OpenRelevantDocumentsModal"
+                              OnFindOrganisations="FindOrganisationsAsync"
+                              OnFindCompanyHouseNames="FindCompanyHouseNamesAsync" />
 }
 
 @if (_isDocumentsModalOpen && _selectedApplication is not null)
@@ -107,6 +117,20 @@ else
     <RelevantPlanningDocumentsModal Application="@_selectedApplication"
                                     Criteria="@GetRelevantDocumentCriteria()"
                                     OnClose="CloseRelevantDocumentsModal" />
+}
+
+@if (_isOrganisationsModalOpen && _selectedApplication is not null && _organisationExtractionResult is not null)
+{
+    <PlanningOrganisationsModal Application="@_selectedApplication"
+                                Result="@_organisationExtractionResult"
+                                OnClose="CloseOrganisationsModal" />
+}
+
+@if (_isCompanyHouseNamesModalOpen && _selectedApplication is not null && _companyHouseNameMatchResult is not null)
+{
+    <PlanningCompanyHouseNamesModal Application="@_selectedApplication"
+                                    Result="@_companyHouseNameMatchResult"
+                                    OnClose="CloseCompanyHouseNamesModal" />
 }
 
 @code {
@@ -138,16 +162,24 @@ else
     private bool _isApplicationModalOpen;
     private bool _isDocumentsModalOpen;
     private bool _isRelevantDocumentsModalOpen;
+    private bool _isOrganisationsModalOpen;
+    private bool _isCompanyHouseNamesModalOpen;
     private bool _isSearchSettingsModalOpen;
     private bool _isExportColumnsModalOpen;
     private bool _isExporting;
+    private bool _isFindingOrganisations;
+    private bool _isFindingCompanyHouseNames;
     private bool _hasNextApplicationPage;
     private bool _hasLoadedPlanningCounts;
     private PlanningApplication? _selectedApplication;
     private PlanningSearchCriterionInput? _selectedSearchCriterion;
+    private PlanningOrganisationExtractionResult? _organisationExtractionResult;
+    private PlanningCompanyHouseNameMatchResult? _companyHouseNameMatchResult;
     private string? _errorMessage;
     private string? _locationErrorMessage;
     private string? _lastSearchText;
+    private string? _organisationExtractionError;
+    private string? _companyHouseNameMatchError;
 
     private int? ApplicationTotalPages => _applicationTotalCount.HasValue
         ? PlanningPagination.GetTotalPages(_applicationTotalCount.Value, ApplicationPageSize)
@@ -168,6 +200,10 @@ else
         && _searchTotalCount > 0
         && (_lastSearchConditions.Count > 0 || _lastSearchFilters.HasActive);
     private bool CanShowRelevantDocuments => _selectedApplication?.PlanningDocuments.Count > 0 && GetRelevantDocumentCriteria().Count > 0;
+    private bool CanFindOrganisations => !_isFindingOrganisations
+        && _selectedApplication?.PlanningDocuments.Any(document => !string.IsNullOrWhiteSpace(document.ContentText)) == true;
+    private bool CanFindCompanyHouseNames => !_isFindingCompanyHouseNames
+        && _selectedApplication?.PlanningDocuments.Any(document => !string.IsNullOrWhiteSpace(document.ContentText)) == true;
 
     protected override async Task OnInitializedAsync()
     {
@@ -567,6 +603,12 @@ else
         _errorMessage = null;
         _isDocumentsModalOpen = false;
         _isRelevantDocumentsModalOpen = false;
+        _isOrganisationsModalOpen = false;
+        _isCompanyHouseNamesModalOpen = false;
+        _organisationExtractionResult = null;
+        _companyHouseNameMatchResult = null;
+        _organisationExtractionError = null;
+        _companyHouseNameMatchError = null;
 
         try
         {
@@ -594,6 +636,12 @@ else
         _isApplicationModalOpen = false;
         _isDocumentsModalOpen = false;
         _isRelevantDocumentsModalOpen = false;
+        _isOrganisationsModalOpen = false;
+        _isCompanyHouseNamesModalOpen = false;
+        _organisationExtractionResult = null;
+        _companyHouseNameMatchResult = null;
+        _organisationExtractionError = null;
+        _companyHouseNameMatchError = null;
         _selectedApplication = null;
     }
 
@@ -603,6 +651,8 @@ else
         {
             _isDocumentsModalOpen = true;
             _isRelevantDocumentsModalOpen = false;
+            _isOrganisationsModalOpen = false;
+            _isCompanyHouseNamesModalOpen = false;
         }
     }
 
@@ -620,6 +670,70 @@ else
 
         _isDocumentsModalOpen = false;
         _isRelevantDocumentsModalOpen = true;
+        _isOrganisationsModalOpen = false;
+        _isCompanyHouseNamesModalOpen = false;
+    }
+
+    private async Task FindOrganisationsAsync()
+    {
+        if (_selectedApplication is null || _isFindingOrganisations)
+        {
+            return;
+        }
+
+        _isFindingOrganisations = true;
+        _organisationExtractionError = null;
+        _organisationExtractionResult = null;
+        _isDocumentsModalOpen = false;
+        _isRelevantDocumentsModalOpen = false;
+        _isOrganisationsModalOpen = false;
+        _isCompanyHouseNamesModalOpen = false;
+        await InvokeAsync(StateHasChanged);
+
+        try
+        {
+            _organisationExtractionResult = await OrganisationExtractionService.ExtractOrganisationsAsync(_selectedApplication);
+            _isOrganisationsModalOpen = true;
+        }
+        catch (Exception ex)
+        {
+            _organisationExtractionError = $"Unable to find organisations: {ex.Message}";
+        }
+        finally
+        {
+            _isFindingOrganisations = false;
+        }
+    }
+
+    private async Task FindCompanyHouseNamesAsync()
+    {
+        if (_selectedApplication is null || _isFindingCompanyHouseNames)
+        {
+            return;
+        }
+
+        _isFindingCompanyHouseNames = true;
+        _companyHouseNameMatchError = null;
+        _companyHouseNameMatchResult = null;
+        _isDocumentsModalOpen = false;
+        _isRelevantDocumentsModalOpen = false;
+        _isOrganisationsModalOpen = false;
+        _isCompanyHouseNamesModalOpen = false;
+        await InvokeAsync(StateHasChanged);
+
+        try
+        {
+            _companyHouseNameMatchResult = await CompanyHouseNameMatchService.FindCompanyHouseNamesAsync(_selectedApplication);
+            _isCompanyHouseNamesModalOpen = true;
+        }
+        catch (Exception ex)
+        {
+            _companyHouseNameMatchError = $"Unable to find Companies House names: {ex.Message}";
+        }
+        finally
+        {
+            _isFindingCompanyHouseNames = false;
+        }
     }
 
     private void CloseDocumentsModal()
@@ -630,6 +744,16 @@ else
     private void CloseRelevantDocumentsModal()
     {
         _isRelevantDocumentsModalOpen = false;
+    }
+
+    private void CloseOrganisationsModal()
+    {
+        _isOrganisationsModalOpen = false;
+    }
+
+    private void CloseCompanyHouseNamesModal()
+    {
+        _isCompanyHouseNamesModalOpen = false;
     }
 
     private List<FullTextSearchCriterion> GetRelevantDocumentCriteria()

@@ -81,12 +81,30 @@ FROM CONTAINSTABLE([dbo].[Company], ([CompanyName]), {0})";
         {
             return companyQuery
                 .Where(_ => false)
-                .Select(company => new CompanySearchQueryResult(company, null));
+                .Select(company => new CompanySearchQueryResult
+                {
+                    Company = company,
+                    SearchRank = null,
+                    CompanyId = company.Id,
+                    CompanyName = company.CompanyName,
+                    CompanyNumber = company.CompanyNumber,
+                    CompanyLocation = company.Location,
+                    Email = company.Email
+                });
         }
 
         if (searchCondition is null)
         {
-            return companyQuery.Select(company => new CompanySearchQueryResult(company, null));
+            return companyQuery.Select(company => new CompanySearchQueryResult
+            {
+                Company = company,
+                SearchRank = null,
+                CompanyId = company.Id,
+                CompanyName = company.CompanyName,
+                CompanyNumber = company.CompanyNumber,
+                CompanyLocation = company.Location,
+                Email = company.Email
+            });
         }
 
         var matches = db.Set<CompanyFullTextSearchMatch>()
@@ -97,7 +115,16 @@ FROM CONTAINSTABLE([dbo].[Company], ([CompanyName]), {0})";
             matches,
             company => company.Id,
             match => match.CompanyId,
-            (company, match) => new CompanySearchQueryResult(company, match.SearchRank));
+            (company, match) => new CompanySearchQueryResult
+            {
+                Company = company,
+                SearchRank = match.SearchRank,
+                CompanyId = company.Id,
+                CompanyName = company.CompanyName,
+                CompanyNumber = company.CompanyNumber,
+                CompanyLocation = company.Location,
+                Email = company.Email
+            });
     }
 
     private static IQueryable<Company> ApplyNonNameFilters(
@@ -139,26 +166,26 @@ FROM CONTAINSTABLE([dbo].[Company], ([CompanyName]), {0})";
         {
             var origin = CreatePoint(filters.Location);
             return query
-                .OrderBy(result => result.Company.Location!.Distance(origin))
+                .OrderBy(result => result.CompanyLocation!.Distance(origin))
                 .ThenByDescending(result => result.SearchRank ?? 0)
-                .ThenBy(result => result.Company.CompanyName)
-                .ThenBy(result => result.Company.CompanyNumber)
-                .ThenBy(result => result.Company.Id);
+                .ThenBy(result => result.CompanyName)
+                .ThenBy(result => result.CompanyNumber)
+                .ThenBy(result => result.CompanyId);
         }
 
         if (RequiresFullTextSearch(filters ?? CompanySearchFilters.Empty))
         {
             return query
                 .OrderByDescending(result => result.SearchRank ?? 0)
-                .ThenBy(result => result.Company.CompanyName)
-                .ThenBy(result => result.Company.CompanyNumber)
-                .ThenBy(result => result.Company.Id);
+                .ThenBy(result => result.CompanyName)
+                .ThenBy(result => result.CompanyNumber)
+                .ThenBy(result => result.CompanyId);
         }
 
         return query
-            .OrderBy(result => result.Company.CompanyName)
-            .ThenBy(result => result.Company.CompanyNumber)
-            .ThenBy(result => result.Company.Id);
+            .OrderBy(result => result.CompanyName)
+            .ThenBy(result => result.CompanyNumber)
+            .ThenBy(result => result.CompanyId);
     }
 
     public static IOrderedQueryable<CompanySearchQueryResult> ApplyPageSort(
@@ -169,21 +196,21 @@ FROM CONTAINSTABLE([dbo].[Company], ([CompanyName]), {0})";
         {
             var origin = CreatePoint(filters.Location);
             return query
-                .OrderBy(result => result.Company.Location!.Distance(origin))
+                .OrderBy(result => result.CompanyLocation!.Distance(origin))
                 .ThenByDescending(result => result.SearchRank ?? 0)
-                .ThenBy(result => result.Company.Id);
+                .ThenBy(result => result.CompanyId);
         }
 
         if (RequiresFullTextSearch(filters ?? CompanySearchFilters.Empty))
         {
             return query
                 .OrderByDescending(result => result.SearchRank ?? 0)
-                .ThenBy(result => result.Company.CompanyName)
-                .ThenBy(result => result.Company.CompanyNumber)
-                .ThenBy(result => result.Company.Id);
+                .ThenBy(result => result.CompanyName)
+                .ThenBy(result => result.CompanyNumber)
+                .ThenBy(result => result.CompanyId);
         }
 
-        return query.OrderBy(result => result.Company.Id);
+        return query.OrderBy(result => result.CompanyId);
     }
 
     public static Point CreatePoint(CompanyLocationSearch location)
@@ -313,6 +340,19 @@ FROM CONTAINSTABLE([dbo].[Company], ([CompanyName]), {0})";
     }
 }
 
-internal sealed record CompanySearchQueryResult(
-    Company Company,
-    int? SearchRank);
+internal sealed class CompanySearchQueryResult
+{
+    public required Company Company { get; init; }
+
+    public int? SearchRank { get; init; }
+
+    public Guid CompanyId { get; init; }
+
+    public string? CompanyName { get; init; }
+
+    public string CompanyNumber { get; init; } = string.Empty;
+
+    public Point? CompanyLocation { get; init; }
+
+    public string? Email { get; init; }
+}
