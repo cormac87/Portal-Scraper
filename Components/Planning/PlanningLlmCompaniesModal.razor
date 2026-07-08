@@ -1,0 +1,122 @@
+@using PortalScraper.Data
+
+@if (Application is not null && Result is not null)
+{
+    <div class="modal-backdrop modal-backdrop-top" @onclick="OnClose">
+        <section class="modal-panel organisations-modal" role="dialog" aria-modal="true" aria-labelledby="llm-companies-modal-title" @onclick:stopPropagation="true">
+            <header class="modal-header">
+                <div>
+                    <p class="planning-authority">@PlanningDisplayFormatter.DisplayValue(Application.ApplicationReference)</p>
+                    <h2 id="llm-companies-modal-title">LLM company search</h2>
+                    <p class="planning-title">@Summary</p>
+                </div>
+                <button class="secondary-button" type="button" @onclick="OnClose">Close</button>
+            </header>
+
+            <section class="llm-result-section">
+                <header>
+                    <h3>LLM suggestions (@Result.Suggestions.Count)</h3>
+                </header>
+
+                @if (Result.Suggestions.Count == 0)
+                {
+                    <p class="document-empty">No company names were suggested by the local LLM.</p>
+                }
+                else
+                {
+                    <div class="organisation-result-list">
+                        @foreach (var suggestion in Result.Suggestions)
+                        {
+                            <article class="organisation-result-card" @key="suggestion.Name">
+                                <header>
+                                    <div>
+                                        <h3>@suggestion.Name</h3>
+                                        <p>@suggestion.DocumentCount document@(suggestion.DocumentCount == 1 ? string.Empty : "s")</p>
+                                    </div>
+                                    <span class="match-count">@suggestion.MentionCount mention@(suggestion.MentionCount == 1 ? string.Empty : "s")</span>
+                                </header>
+
+                                <div class="organisation-document-list">
+                                    @foreach (var document in suggestion.Documents)
+                                    {
+                                        <div @key="document.DocumentId">
+                                            <span>@document.DocumentName</span>
+                                            <strong>@document.MentionCount</strong>
+                                        </div>
+                                    }
+                                </div>
+                            </article>
+                        }
+                    </div>
+                }
+            </section>
+
+            <section class="llm-result-section">
+                <header>
+                    <h3>Database-confirmed companies (@Result.ConfirmedCompanies.Companies.Count)</h3>
+                </header>
+
+                @if (Result.ConfirmedCompanies.Companies.Count == 0)
+                {
+                    <p class="document-empty">No LLM suggestions matched a company in the Companies House database.</p>
+                }
+                else
+                {
+                    <div class="organisation-result-list">
+                        @foreach (var company in Result.ConfirmedCompanies.Companies)
+                        {
+                            <article class="organisation-result-card" @key="company.CompanyId">
+                                <header>
+                                    <div>
+                                        <h3>@company.CompanyName</h3>
+                                        <p>@company.CompanyNumber | @PlanningDisplayFormatter.DisplayValue(company.CompanyStatus) | @company.DocumentCount document@(company.DocumentCount == 1 ? string.Empty : "s")</p>
+                                    </div>
+                                    <span class="match-count">@company.MentionCount mention@(company.MentionCount == 1 ? string.Empty : "s")</span>
+                                </header>
+
+                                <div class="organisation-document-list">
+                                    @foreach (var document in company.Documents)
+                                    {
+                                        <div @key="document.DocumentId">
+                                            <span>@document.DocumentName</span>
+                                            <strong>@document.MentionCount</strong>
+                                        </div>
+                                    }
+                                </div>
+                            </article>
+                        }
+                    </div>
+                }
+            </section>
+        </section>
+    </div>
+}
+
+@code {
+    [Parameter]
+    public PlanningApplication? Application { get; set; }
+
+    [Parameter]
+    public PlanningLlmCompanyExtractionResult? Result { get; set; }
+
+    [Parameter]
+    public EventCallback OnClose { get; set; }
+
+    private string Summary
+    {
+        get
+        {
+            if (Result is null)
+            {
+                return string.Empty;
+            }
+
+            var processed = $"{Result.ProcessedDocumentCount} document{(Result.ProcessedDocumentCount == 1 ? string.Empty : "s")} scanned";
+            var chunks = $"{Result.ChunkCount} chunk{(Result.ChunkCount == 1 ? string.Empty : "s")}";
+            var confirmed = $"{Result.ConfirmedCompanies.Companies.Count} confirmed";
+            return Result.SkippedDocumentCount == 0
+                ? $"{processed} | {chunks} | {confirmed} | {Result.Model}"
+                : $"{processed} | {Result.SkippedDocumentCount} skipped | {chunks} | {confirmed} | {Result.Model}";
+        }
+    }
+}

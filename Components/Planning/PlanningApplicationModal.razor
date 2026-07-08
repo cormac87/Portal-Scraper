@@ -88,6 +88,9 @@
                 <button class="secondary-button" type="button" @onclick="OnFindCompanyHouseNames" disabled="@(!CanFindCompanyHouseNames)">
                     @(IsFindingCompanyHouseNames ? "Finding company names..." : "Find Company House Names")
                 </button>
+                <button class="secondary-button" type="button" @onclick="OnLlmFindCompanies" disabled="@(!CanLlmFindCompanies)">
+                    @(IsLlmFindingCompanies ? "Running local LLM..." : "LLM Find Companies")
+                </button>
             </footer>
 
             @if (!string.IsNullOrWhiteSpace(OrganisationExtractionError))
@@ -97,6 +100,10 @@
             @if (!string.IsNullOrWhiteSpace(CompanyHouseNameMatchError))
             {
                 <p class="document-error modal-action-message">@CompanyHouseNameMatchError</p>
+            }
+            @if (!string.IsNullOrWhiteSpace(LlmCompanyExtractionError))
+            {
+                <p class="document-error modal-action-message">@LlmCompanyExtractionError</p>
             }
         </section>
     </div>
@@ -116,16 +123,25 @@
     public bool CanFindCompanyHouseNames { get; set; }
 
     [Parameter]
+    public bool CanLlmFindCompanies { get; set; }
+
+    [Parameter]
     public bool IsFindingOrganisations { get; set; }
 
     [Parameter]
     public bool IsFindingCompanyHouseNames { get; set; }
 
     [Parameter]
+    public bool IsLlmFindingCompanies { get; set; }
+
+    [Parameter]
     public string? OrganisationExtractionError { get; set; }
 
     [Parameter]
     public string? CompanyHouseNameMatchError { get; set; }
+
+    [Parameter]
+    public string? LlmCompanyExtractionError { get; set; }
 
     [Parameter]
     public EventCallback OnClose { get; set; }
@@ -141,4 +157,7 @@
 
     [Parameter]
     public EventCallback OnFindCompanyHouseNames { get; set; }
+
+    [Parameter]
+    public EventCallback OnLlmFindCompanies { get; set; }
 }

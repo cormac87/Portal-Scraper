@@ -1158,6 +1158,22 @@ code {
     overflow: auto;
 }
 
+.llm-result-section {
+    display: grid;
+    gap: 0.75rem;
+}
+
+.llm-result-section + .llm-result-section {
+    margin-top: 1rem;
+    padding-top: 1rem;
+    border-top: 1px solid rgba(216, 224, 238, 0.9);
+}
+
+.llm-result-section > header h3 {
+    margin: 0;
+    font-size: 1rem;
+}
+
 .organisation-result-card {
     display: grid;
     gap: 0.75rem;

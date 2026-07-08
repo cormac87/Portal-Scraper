@@ -99,6 +99,37 @@ SELECT CAST(
             companyMatches.Sum(company => company.MentionCount));
     }
 
+    public async Task<PlanningCompanyHouseNameMatchResult> MatchCandidateNamesAsync(
+        IReadOnlyCollection<PlanningCompanyHouseNameCandidate> candidates,
+        int processedDocumentCount,
+        int skippedDocumentCount,
+        CancellationToken cancellationToken = default)
+    {
+        var candidateIndex = BuildCandidateIndex(candidates);
+        if (candidateIndex.Count == 0)
+        {
+            return new PlanningCompanyHouseNameMatchResult(
+                [],
+                processedDocumentCount,
+                skippedDocumentCount,
+                0,
+                0);
+        }
+
+        await using var db = await dbFactory.CreateDbContextAsync(cancellationToken);
+        var hasNormalizedCompanyNameColumn = await HasNormalizedCompanyNameColumnAsync(db, cancellationToken);
+        var companyMatches = hasNormalizedCompanyNameColumn
+            ? await FindCompaniesByNormalizedNameAsync(db, candidateIndex, cancellationToken)
+            : await FindCompaniesByExactNameAsync(db, candidateIndex, cancellationToken);
+
+        return new PlanningCompanyHouseNameMatchResult(
+            companyMatches,
+            processedDocumentCount,
+            skippedDocumentCount,
+            candidateIndex.Count,
+            companyMatches.Sum(company => company.MentionCount));
+    }
+
     private static Dictionary<string, CandidateNameAccumulator> BuildCandidateIndex(
         IReadOnlyList<MatchDocument> documents)
     {
@@ -130,6 +161,35 @@ SELECT CAST(
                     AddCandidateVariants(candidateIndex, document, tokens, startIndex, endIndex);
                 }
             }
+        }
+
+        return candidateIndex;
+    }
+
+    private static Dictionary<string, CandidateNameAccumulator> BuildCandidateIndex(
+        IReadOnlyCollection<PlanningCompanyHouseNameCandidate> candidates)
+    {
+        var candidateIndex = new Dictionary<string, CandidateNameAccumulator>(StringComparer.Ordinal);
+
+        foreach (var candidate in candidates)
+        {
+            if (string.IsNullOrWhiteSpace(candidate.Name))
+            {
+                continue;
+            }
+
+            var words = TokenizeName(candidate.Name);
+            if (words.Count == 0)
+            {
+                continue;
+            }
+
+            AddCandidateNameVariants(
+                candidateIndex,
+                candidate.DocumentId,
+                candidate.DocumentName,
+                words,
+                Math.Max(1, candidate.MentionCount));
         }
 
         return candidateIndex;
@@ -226,6 +286,36 @@ SELECT CAST(
             }
 
             accumulator.AddOccurrence(document.Id, document.Name, start, end);
+        }
+    }
+
+    private static void AddCandidateNameVariants(
+        Dictionary<string, CandidateNameAccumulator> candidateIndex,
+        Guid documentId,
+        string documentName,
+        IReadOnlyList<string> words,
+        int mentionCount)
+    {
+        var variants = BuildCandidateVariants(words);
+        foreach (var variant in variants)
+        {
+            if (variant.LookupKey.Length < 3)
+            {
+                continue;
+            }
+
+            if (!candidateIndex.TryGetValue(variant.LookupKey, out var accumulator))
+            {
+                accumulator = new CandidateNameAccumulator(variant.LookupKey);
+                candidateIndex.Add(variant.LookupKey, accumulator);
+            }
+
+            foreach (var exactName in variant.ExactNames)
+            {
+                accumulator.ExactNames.Add(exactName);
+            }
+
+            accumulator.AddMentions(documentId, documentName, mentionCount);
         }
     }
 
@@ -623,10 +713,23 @@ WHERE {lookupColumn} IN ({string.Join(", ", parameterNames)})";
 
             document.Spans.Add($"{start}:{end}");
         }
+
+        public void AddMentions(Guid documentId, string documentName, int mentionCount)
+        {
+            if (!_documents.TryGetValue(documentId, out var document))
+            {
+                document = new CandidateDocumentAccumulator(documentId, documentName);
+                _documents.Add(documentId, document);
+            }
+
+            document.AddSyntheticMentions(mentionCount);
+        }
     }
 
     private sealed class CandidateDocumentAccumulator(Guid documentId, string documentName)
     {
+        private int _syntheticMentionIndex;
+
         public Guid DocumentId { get; } = documentId;
 
         public string DocumentName { get; } = documentName;
@@ -634,6 +737,14 @@ WHERE {lookupColumn} IN ({string.Join(", ", parameterNames)})";
         public HashSet<string> Spans { get; } = new(StringComparer.Ordinal);
 
         public int MentionCount => Spans.Count;
+
+        public void AddSyntheticMentions(int mentionCount)
+        {
+            for (var index = 0; index < mentionCount; index++)
+            {
+                Spans.Add($"llm:{_syntheticMentionIndex++}");
+            }
+        }
     }
 
     private sealed record CompanyLookupResult(

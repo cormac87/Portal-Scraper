@@ -6,6 +6,7 @@
 @inject IPlanningApplicationExcelExportService ExcelExportService
 @inject IPlanningOrganisationExtractionService OrganisationExtractionService
 @inject IPlanningCompanyHouseNameMatchService CompanyHouseNameMatchService
+@inject IPlanningLlmCompanyExtractionService LlmCompanyExtractionService
 @inject IPlanningAuthorityLocationService AuthorityLocationService
 @inject IPostcodeGeocodingService PostcodeGeocodingService
 @inject IJSRuntime JS
@@ -95,15 +96,19 @@ else
                               CanShowRelevantDocuments="@CanShowRelevantDocuments"
                               CanFindOrganisations="@CanFindOrganisations"
                               CanFindCompanyHouseNames="@CanFindCompanyHouseNames"
+                              CanLlmFindCompanies="@CanLlmFindCompanies"
                               IsFindingOrganisations="@_isFindingOrganisations"
                               IsFindingCompanyHouseNames="@_isFindingCompanyHouseNames"
+                              IsLlmFindingCompanies="@_isLlmFindingCompanies"
                               OrganisationExtractionError="@_organisationExtractionError"
                               CompanyHouseNameMatchError="@_companyHouseNameMatchError"
+                              LlmCompanyExtractionError="@_llmCompanyExtractionError"
                               OnClose="CloseApplicationModal"
                               OnOpenDocuments="OpenDocumentsModal"
                               OnOpenRelevantDocuments="OpenRelevantDocumentsModal"
                               OnFindOrganisations="FindOrganisationsAsync"
-                              OnFindCompanyHouseNames="FindCompanyHouseNamesAsync" />
+                              OnFindCompanyHouseNames="FindCompanyHouseNamesAsync"
+                              OnLlmFindCompanies="LlmFindCompaniesAsync" />
 }
 
 @if (_isDocumentsModalOpen && _selectedApplication is not null)
@@ -131,6 +136,13 @@ else
     <PlanningCompanyHouseNamesModal Application="@_selectedApplication"
                                     Result="@_companyHouseNameMatchResult"
                                     OnClose="CloseCompanyHouseNamesModal" />
+}
+
+@if (_isLlmCompaniesModalOpen && _selectedApplication is not null && _llmCompanyExtractionResult is not null)
+{
+    <PlanningLlmCompaniesModal Application="@_selectedApplication"
+                               Result="@_llmCompanyExtractionResult"
+                               OnClose="CloseLlmCompaniesModal" />
 }
 
 @code {
@@ -164,22 +176,26 @@ else
     private bool _isRelevantDocumentsModalOpen;
     private bool _isOrganisationsModalOpen;
     private bool _isCompanyHouseNamesModalOpen;
+    private bool _isLlmCompaniesModalOpen;
     private bool _isSearchSettingsModalOpen;
     private bool _isExportColumnsModalOpen;
     private bool _isExporting;
     private bool _isFindingOrganisations;
     private bool _isFindingCompanyHouseNames;
+    private bool _isLlmFindingCompanies;
     private bool _hasNextApplicationPage;
     private bool _hasLoadedPlanningCounts;
     private PlanningApplication? _selectedApplication;
     private PlanningSearchCriterionInput? _selectedSearchCriterion;
     private PlanningOrganisationExtractionResult? _organisationExtractionResult;
     private PlanningCompanyHouseNameMatchResult? _companyHouseNameMatchResult;
+    private PlanningLlmCompanyExtractionResult? _llmCompanyExtractionResult;
     private string? _errorMessage;
     private string? _locationErrorMessage;
     private string? _lastSearchText;
     private string? _organisationExtractionError;
     private string? _companyHouseNameMatchError;
+    private string? _llmCompanyExtractionError;
 
     private int? ApplicationTotalPages => _applicationTotalCount.HasValue
         ? PlanningPagination.GetTotalPages(_applicationTotalCount.Value, ApplicationPageSize)
@@ -203,6 +219,8 @@ else
     private bool CanFindOrganisations => !_isFindingOrganisations
         && _selectedApplication?.PlanningDocuments.Any(document => !string.IsNullOrWhiteSpace(document.ContentText)) == true;
     private bool CanFindCompanyHouseNames => !_isFindingCompanyHouseNames
+        && _selectedApplication?.PlanningDocuments.Any(document => !string.IsNullOrWhiteSpace(document.ContentText)) == true;
+    private bool CanLlmFindCompanies => !_isLlmFindingCompanies
         && _selectedApplication?.PlanningDocuments.Any(document => !string.IsNullOrWhiteSpace(document.ContentText)) == true;
 
     protected override async Task OnInitializedAsync()
@@ -605,10 +623,13 @@ else
         _isRelevantDocumentsModalOpen = false;
         _isOrganisationsModalOpen = false;
         _isCompanyHouseNamesModalOpen = false;
+        _isLlmCompaniesModalOpen = false;
         _organisationExtractionResult = null;
         _companyHouseNameMatchResult = null;
+        _llmCompanyExtractionResult = null;
         _organisationExtractionError = null;
         _companyHouseNameMatchError = null;
+        _llmCompanyExtractionError = null;
 
         try
         {
@@ -638,10 +659,13 @@ else
         _isRelevantDocumentsModalOpen = false;
         _isOrganisationsModalOpen = false;
         _isCompanyHouseNamesModalOpen = false;
+        _isLlmCompaniesModalOpen = false;
         _organisationExtractionResult = null;
         _companyHouseNameMatchResult = null;
+        _llmCompanyExtractionResult = null;
         _organisationExtractionError = null;
         _companyHouseNameMatchError = null;
+        _llmCompanyExtractionError = null;
         _selectedApplication = null;
     }
 
@@ -653,6 +677,7 @@ else
             _isRelevantDocumentsModalOpen = false;
             _isOrganisationsModalOpen = false;
             _isCompanyHouseNamesModalOpen = false;
+            _isLlmCompaniesModalOpen = false;
         }
     }
 
@@ -672,6 +697,7 @@ else
         _isRelevantDocumentsModalOpen = true;
         _isOrganisationsModalOpen = false;
         _isCompanyHouseNamesModalOpen = false;
+        _isLlmCompaniesModalOpen = false;
     }
 
     private async Task FindOrganisationsAsync()
@@ -688,6 +714,7 @@ else
         _isRelevantDocumentsModalOpen = false;
         _isOrganisationsModalOpen = false;
         _isCompanyHouseNamesModalOpen = false;
+        _isLlmCompaniesModalOpen = false;
         await InvokeAsync(StateHasChanged);
 
         try
@@ -719,6 +746,7 @@ else
         _isRelevantDocumentsModalOpen = false;
         _isOrganisationsModalOpen = false;
         _isCompanyHouseNamesModalOpen = false;
+        _isLlmCompaniesModalOpen = false;
         await InvokeAsync(StateHasChanged);
 
         try
@@ -733,6 +761,38 @@ else
         finally
         {
             _isFindingCompanyHouseNames = false;
+        }
+    }
+
+    private async Task LlmFindCompaniesAsync()
+    {
+        if (_selectedApplication is null || _isLlmFindingCompanies)
+        {
+            return;
+        }
+
+        _isLlmFindingCompanies = true;
+        _llmCompanyExtractionError = null;
+        _llmCompanyExtractionResult = null;
+        _isDocumentsModalOpen = false;
+        _isRelevantDocumentsModalOpen = false;
+        _isOrganisationsModalOpen = false;
+        _isCompanyHouseNamesModalOpen = false;
+        _isLlmCompaniesModalOpen = false;
+        await InvokeAsync(StateHasChanged);
+
+        try
+        {
+            _llmCompanyExtractionResult = await LlmCompanyExtractionService.FindCompaniesAsync(_selectedApplication);
+            _isLlmCompaniesModalOpen = true;
+        }
+        catch (Exception ex)
+        {
+            _llmCompanyExtractionError = $"Unable to run local LLM company extraction: {ex.Message}";
+        }
+        finally
+        {
+            _isLlmFindingCompanies = false;
         }
     }
 
@@ -754,6 +814,11 @@ else
     private void CloseCompanyHouseNamesModal()
     {
         _isCompanyHouseNamesModalOpen = false;
+    }
+
+    private void CloseLlmCompaniesModal()
+    {
+        _isLlmCompaniesModalOpen = false;
     }
 
     private List<FullTextSearchCriterion> GetRelevantDocumentCriteria()
