@@ -10,6 +10,8 @@ namespace PortalScraper.Services.Planning;
 
 public sealed class PlanningSearchService(IDbContextFactory<ApplicationDbContext> dbFactory) : IPlanningSearchService
 {
+    private const int MaxAdjacentSearchTerms = 64;
+
     private const string FullTextSearchAvailabilitySql = @"
 SELECT CAST(
     CASE
@@ -601,18 +603,24 @@ OPTION (MAXDOP 1)");
         return reader.IsDBNull(ordinal) ? null : reader.GetDateTime(ordinal);
     }
 
-    private static List<string> ExtractSearchTerms(string? value)
+    private static List<string> ExtractSearchTerms(string? value, bool preserveWordSequence)
     {
         if (string.IsNullOrWhiteSpace(value))
         {
             return [];
         }
 
-        return KeywordRegex.Matches(value)
+        var terms = KeywordRegex.Matches(value)
             .Select(match => match.Value)
-            .Where(term => term.Length > 1 && !IgnoredSearchTerms.Contains(term))
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .Take(10)
+            .Where(term => preserveWordSequence || term.Length > 1 && !IgnoredSearchTerms.Contains(term));
+
+        if (!preserveWordSequence)
+        {
+            terms = terms.Distinct(StringComparer.OrdinalIgnoreCase);
+        }
+
+        return terms
+            .Take(preserveWordSequence ? MaxAdjacentSearchTerms : 10)
             .Select(term => term.Length > 50 ? term[..50] : term)
             .ToList();
     }
@@ -636,7 +644,7 @@ OPTION (MAXDOP 1)");
         bool requireAdjacentWords)
     {
         var displayText = value?.Trim();
-        var searchTerms = ExtractSearchTerms(displayText);
+        var searchTerms = ExtractSearchTerms(displayText, requireAdjacentWords);
 
         if (displayText is null || searchTerms.Count == 0)
         {

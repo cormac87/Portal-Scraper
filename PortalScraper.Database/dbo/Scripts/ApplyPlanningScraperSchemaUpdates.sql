@@ -512,7 +512,22 @@ BEGIN
         )
         KEY INDEX [PK_PlanningApplication]
         ON [PlanningSearchCatalog]
-        WITH CHANGE_TRACKING AUTO;');
+        WITH
+        (
+            CHANGE_TRACKING = AUTO,
+            STOPLIST = OFF
+        );');
+END;
+
+IF FULLTEXTSERVICEPROPERTY('IsFullTextInstalled') = 1
+    AND EXISTS (
+        SELECT 1
+        FROM sys.fulltext_indexes
+        WHERE object_id = OBJECT_ID('dbo.PlanningApplication')
+            AND stoplist_id IS NOT NULL
+    )
+BEGIN
+    EXEC(N'ALTER FULLTEXT INDEX ON [dbo].[PlanningApplication] SET STOPLIST = OFF;');
 END;
 
 IF FULLTEXTSERVICEPROPERTY('IsFullTextInstalled') = 1
@@ -536,5 +551,20 @@ BEGIN
         )
         KEY INDEX [PK_PlanningDocuments]
         ON [PlanningSearchCatalog]
-        WITH CHANGE_TRACKING AUTO;');
+        WITH
+        (
+            CHANGE_TRACKING = AUTO,
+            STOPLIST = OFF
+        );');
+END;
+
+IF FULLTEXTSERVICEPROPERTY('IsFullTextInstalled') = 1
+    AND EXISTS (
+        SELECT 1
+        FROM sys.fulltext_indexes
+        WHERE object_id = OBJECT_ID('dbo.PlanningDocument')
+            AND stoplist_id IS NOT NULL
+    )
+BEGIN
+    EXEC(N'ALTER FULLTEXT INDEX ON [dbo].[PlanningDocument] SET STOPLIST = OFF;');
 END;

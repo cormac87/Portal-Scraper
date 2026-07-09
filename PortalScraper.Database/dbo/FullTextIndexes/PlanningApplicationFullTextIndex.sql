@@ -6,4 +6,8 @@ CREATE FULLTEXT INDEX ON [dbo].[PlanningApplication]
 )
 KEY INDEX [PK_PlanningApplication]
 ON [PlanningSearchCatalog]
-WITH CHANGE_TRACKING AUTO;
+WITH
+(
+    CHANGE_TRACKING = AUTO,
+    STOPLIST = OFF
+);

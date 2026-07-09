@@ -1,10 +1,18 @@
 using System.Text;
 using UglyToad.PdfPig;
+using UglyToad.PdfPig.DocumentLayoutAnalysis.TextExtractor;
 
 namespace PortalScraper.Services.Documents;
 
 public sealed class PdfPlanningDocumentTextExtractor : PlanningDocumentTextExtractor
 {
+    private static readonly ContentOrderTextExtractor.Options TextExtractionOptions = new()
+    {
+        SeparateParagraphsWithDoubleNewline = true,
+        ReplaceWhitespaceWithSpace = true,
+        NegativeGapAsWhitespace = true
+    };
+
     public override string Name => "PDF";
 
     public override IReadOnlySet<string> SupportedExtensions { get; } =
@@ -24,7 +32,7 @@ public sealed class PdfPlanningDocumentTextExtractor : PlanningDocumentTextExtra
         foreach (var page in pdf.GetPages())
         {
             cancellationToken.ThrowIfCancellationRequested();
-            builder.AppendLine(page.Text);
+            builder.AppendLine(ContentOrderTextExtractor.GetText(page, TextExtractionOptions));
             builder.AppendLine();
         }
 
